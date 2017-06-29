@@ -631,6 +631,7 @@ char *is_suffixed_with_case(const char *string, const char *key) FAST_FUNC;
 const char *get_busybox_exec_path(void);
 void init_winsock(void);
 
+const char *mingw_pathconv(const char *path) FAST_FUNC;
 int has_bat_suffix(const char *p) FAST_FUNC;
 int has_exe_suffix(const char *p) FAST_FUNC;
 int has_exe_suffix_or_dot(const char *name) FAST_FUNC;
