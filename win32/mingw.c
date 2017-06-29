@@ -49,6 +49,102 @@ smallint bb_got_signal;
 static mode_t current_umask = DEFAULT_UMASK;
 
 #pragma GCC optimize ("no-if-conversion")
+
+/* This function is not thread safe. Does it need to be? */
+const char *mingw_pathconv(const char *path)
+{
+	static char pseudo_root[PATH_MAX];
+#define MAX_CONCURRENT_PATHCONV 64
+	static char tmp[MAX_CONCURRENT_PATHCONV][PATH_MAX];
+	static int pseudo_root_len, next;
+	char *result;
+
+	if (!path || !*path) {
+		bb_error_msg("can't convert empty path");
+		return NULL;
+	}
+
+	if (path[0] != '/' || path[1] == '/')
+		return path;
+
+	if (next >= MAX_CONCURRENT_PATHCONV)
+		next = 0;
+
+	if (isalpha(path[1]) && path[2] == '/') {
+		result = tmp[next++];
+		result[0] = path[1];
+		result[1] = ':';
+		safe_strncpy(result + 2, path + 2, PATH_MAX - 2);
+		return result;
+	}
+
+	if (!_strnicmp(path + 1, "tmp/", 4)) {
+		const char *temp = getenv("TEMP");
+		size_t len = strlen(temp);
+
+		if (len >= PATH_MAX)
+			len = PATH_MAX - 1;
+
+		if (len && is_dir_sep(temp[len - 1]))
+			len--;
+
+		result = tmp[next++];
+		memcpy(result, temp, len);
+		safe_strncpy(result + len, path + 4, PATH_MAX - len);
+		return result;
+	}
+
+	if (!*pseudo_root) {
+		const char *exec_path = bb_busybox_exec_path;
+		size_t len = strlen(exec_path);
+
+		if (len > 5 && !_strnicmp(exec_path + len - 4, ".exe", 4)) {
+			len -= 3;
+			while (--len && !is_dir_sep(exec_path[len]))
+				; /* do nothing */
+			if (len > 4 && is_dir_sep(exec_path[len - 4]) &&
+			    !_strnicmp(exec_path + len - 3, "bin", 3)) {
+				len -= 4;
+				if (len > 8 && is_dir_sep(exec_path[len - 8]) &&
+				    isdigit(exec_path[len - 1]) &&
+				    isdigit(exec_path[len - 2]) &&
+				    !_strnicmp(exec_path + len - 7, "mingw", 5))
+					len -= 8;
+			} else if (len > 8 + 8 && is_dir_sep(exec_path[len - 8]) &&
+			    !_strnicmp(exec_path + len - 7, "busybox", 7) &&
+			     is_dir_sep(exec_path[len - 8 - 8]) &&
+			    !_strnicmp(exec_path + len - 8 - 7, "libexec", 7)) {
+				len -= 8 + 8;
+				if (len > 8 && is_dir_sep(exec_path[len - 8]) &&
+				    isdigit(exec_path[len - 1]) &&
+				    isdigit(exec_path[len - 2]) &&
+				    !_strnicmp(exec_path + len - 7, "mingw", 5))
+					len -= 8;
+			}
+		}
+
+		if (len > PATH_MAX)
+			len = PATH_MAX;
+		else if (!len) {
+			exec_path = "C:/";
+			len = 2;
+		}
+
+		safe_strncpy(pseudo_root, exec_path, len + 1);
+		pseudo_root_len = len;
+		if (pseudo_root_len + 1 < PATH_MAX &&
+				pseudo_root[pseudo_root_len - 1] != '/')
+			pseudo_root[pseudo_root_len++] = '/';
+	}
+
+	result = tmp[next++];
+	memcpy(result, pseudo_root, pseudo_root_len);
+	safe_strncpy(result + pseudo_root_len, path + 1,
+		PATH_MAX - pseudo_root_len);
+
+	return result;
+}
+
 int err_win_to_posix(void)
 {
 	int error = ENOSYS;
@@ -240,6 +336,9 @@ int mingw_open (const char *filename, int oflags, ...)
 	else if ((fd=get_dev_fd(filename)) >= 0) {
 		return fd;
 	}
+	else if (filename) {
+		filename = mingw_pathconv(filename);
+	}
 
 	if ((oflags & O_CREAT)) {
 		va_start(args, oflags);
@@ -292,6 +391,8 @@ FILE *mingw_fopen (const char *filename, const char *otype)
 		filename = "nul";
 	else if ((fd=get_dev_fd(filename)) >= 0)
 		return fdopen(fd, otype);
+	else if (filename)
+		filename = mingw_pathconv(filename);
 	stream = fopen(filename, otype);
 	if (stream == NULL && errno == EACCES && strcmp(otype, "r") == 0 &&
 			mingw_is_directory(filename))
@@ -386,6 +487,8 @@ static inline mode_t file_attr_to_st_mode(DWORD attr)
 static int get_file_attr(const char *fname, WIN32_FILE_ATTRIBUTE_DATA *fdata)
 {
 	char *want_dir;
+
+	fname = mingw_pathconv(fname);
 
 	if (get_dev_type(fname) == DEV_NULL || get_dev_fd(fname) >= 0) {
 		/* Fake attributes for special devices */
@@ -651,6 +754,7 @@ static DWORD is_symlink(const char *pathname)
 	WIN32_FILE_ATTRIBUTE_DATA fdata;
 	WIN32_FIND_DATAA fbuf;
 
+	pathname = mingw_pathconv(pathname);
 	if (!get_file_attr(pathname, &fdata))
 		return get_symlink_data(fdata.dwFileAttributes, pathname, &fbuf);
 	return 0;
@@ -660,6 +764,7 @@ static int mingw_is_directory(const char *path)
 {
 	WIN32_FILE_ATTRIBUTE_DATA fdata;
 
+	path = mingw_pathconv(path);
 	return get_file_attr(path, &fdata) == 0 &&
 				(fdata.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
 }
@@ -727,6 +832,7 @@ static int do_lstat(int follow, const char *file_name, struct mingw_stat *buf)
 		return 0;
 	}
 
+	file_name = mingw_pathconv(file_name);
 	while (!(err=get_file_attr(file_name, &fdata))) {
 		buf->st_ino = 0;
 		buf->st_uid = DEFAULT_UID;
@@ -973,6 +1079,7 @@ int utimensat(int fd, const char *path, const struct timespec times[2],
 	if (flags & AT_SYMLINK_NOFOLLOW)
 		cflag |= FILE_FLAG_OPEN_REPARSE_POINT;
 
+	path = mingw_pathconv(path);
 	fh = CreateFile(path, FILE_WRITE_ATTRIBUTES, 0, NULL, OPEN_EXISTING,
 					cflag, NULL);
 	if (fh == INVALID_HANDLE_VALUE) {
@@ -1131,6 +1238,9 @@ char *mingw_getcwd(char *pointer, int len)
 int mingw_rename(const char *pold, const char *pnew)
 {
 	DWORD attrs;
+
+	pold = mingw_pathconv(pold);
+	pnew = mingw_pathconv(pnew);
 
 	/*
 	 * For non-symlinks, try native rename() first to get errno right.
@@ -1377,6 +1487,8 @@ int link(const char *oldpath, const char *newpath)
 		errno = ENOSYS;
 		return -1;
 	}
+	oldpath = mingw_pathconv(oldpath);
+	newpath = mingw_pathconv(newpath);
 	if (!CreateHardLinkA(newpath, oldpath, NULL)) {
 		errno = err_win_to_posix();
 		return -1;
@@ -1653,6 +1765,7 @@ char *realpath(const char *path, char *resolved_path)
 		return NULL;
 	}
 
+	path = mingw_pathconv(path);
 	if (_fullpath(buffer, path, MAX_PATH) &&
 			(real_path=resolve_symlinks(buffer))) {
 		bs_to_slash(strcpy(resolved_path, real_path));
@@ -1789,6 +1902,7 @@ int mingw_mkdir(const char *path, int mode UNUSED_PARAM)
 	struct stat st;
 	int lerrno = 0;
 
+	path = mingw_pathconv(path);
 	if ( (ret=mkdir(path)) < 0 ) {
 		lerrno = errno;
 		if ( lerrno == EACCES && stat(path, &st) == 0 ) {
@@ -1806,6 +1920,8 @@ int mingw_chdir(const char *dirname)
 {
 	int ret = -1;
 	char *realdir;
+
+	dirname = mingw_pathconv(dirname);
 
 	if (is_symlink(dirname))
 		realdir = xmalloc_realpath(dirname);
@@ -1880,6 +1996,7 @@ int mingw_unlink(const char *pathname)
 	int ret;
 
 	/* read-only files cannot be removed */
+	pathname = mingw_pathconv(pathname);
 	chmod(pathname, 0666);
 
 	ret = unlink(pathname);
@@ -2042,6 +2159,7 @@ int mingw_access(const char *name, int mode)
 	int ret;
 	struct stat s;
 
+	name = mingw_pathconv(name);
 	/* Windows can only handle test for existence, read or write */
 	if (mode == F_OK || (mode & ~X_OK)) {
 		ret = _access(name, mode & ~X_OK);
@@ -2069,6 +2187,7 @@ int mingw_rmdir(const char *path)
 	}
 
 	/* read-only directories cannot be removed */
+	path = mingw_pathconv(path);
 	chmod(path, 0666);
 	return rmdir(path);
 }
