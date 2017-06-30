@@ -1897,6 +1897,22 @@ static int sh_open(const char *pathname, int flags, int mayfail)
 		e = errno;
 	} while (fd < 0 && e == EINTR && !pending_sig);
 
+#if ENABLE_PLATFORM_MINGW32
+	/* On Windows, opening an existing file with
+	 * O_WRONLY|O_CREAT|O_TRUNC may fail with EACCES.  The same
+	 * call without O_TRUNC would succeed; truncate manually. */
+	if (fd < 0 && e == EACCES && (flags & O_TRUNC)) {
+		fd = open(pathname, flags & ~(O_CREAT|O_TRUNC), 0666);
+		if (fd < 0) {
+			e = errno;
+		} else if (ftruncate(fd, 0) < 0) {
+			e = errno;
+			close(fd);
+			fd = -1;
+		}
+	}
+#endif
+
 	if (mayfail || fd >= 0)
 		return fd;
 
