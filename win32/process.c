@@ -112,6 +112,37 @@ parse_interpreter(const char *cmd, interp_t *interp)
 	return 0;
 }
 
+static char * FAST_FUNC
+quote_arg_msys2(const char *arg)
+{
+	int escapes = 0, has_white_space = 0;
+	const char *p;
+	char *q, *result;
+
+	for (p = arg; *p; p++)
+		if (isspace(*p))
+			has_white_space = 1;
+		else if (*p == '"' || *p == '\\')
+			escapes++;
+
+	if (!escapes && !has_white_space && p != arg)
+		return (char *)arg;
+
+	q = result = malloc(p - arg + escapes + 3);
+	if (!q)
+		return (char *)arg; /* out of memory: punt */
+	*(q++) = '"';
+	for (p = arg; *p; p++) {
+		if (*p == '"' || *p == '\\')
+			*(q++) = '\\';
+		*(q++) = *p;
+	}
+	*(q++) = '"';
+	*q = '\0';
+
+	return result;
+}
+
 /*
  * See https://docs.microsoft.com/en-us/cpp/cpp/main-function-command-line-args?view=vs-2019#parsing-c-command-line-arguments
  * (Parsing C++ Command-Line Arguments)
@@ -156,6 +187,25 @@ find_first_executable(const char *name)
 	return find_executable(name, &path);
 }
 
+static inline int is_slash(char c)
+{
+	return c == '/' || c == '\\';
+}
+
+static int is_msys2_cmd(const char *cmd)
+{
+	int len = strlen(cmd);
+
+	if (len < 9)
+		return 0;
+
+	while (len-- && !is_slash(cmd[len]))
+		; /* do nothing */
+	return len > 7 && is_slash(cmd[len - 8]) && is_slash(cmd[len - 4]) &&
+		!_strnicmp(cmd + len - 7, "usr", 3) &&
+		!_strnicmp(cmd + len - 3, "bin", 3);
+}
+
 static intptr_t
 spawnveq(int mode, const char *path, char *const *argv, char *const *env)
 {
@@ -165,6 +215,9 @@ spawnveq(int mode, const char *path, char *const *argv, char *const *env)
 	intptr_t ret;
 	struct stat st;
 	size_t len = 0;
+
+	char *(FAST_FUNC *qa)(const char *);
+	qa = is_msys2_cmd(path) ? quote_arg_msys2 : quote_arg;
 
 	path = mingw_pathconv(path);
 
@@ -185,7 +238,7 @@ spawnveq(int mode, const char *path, char *const *argv, char *const *env)
 	argc = string_array_len((char **)argv);
 	new_argv = xzalloc(sizeof(*argv)*(argc+1));
 	for (i = 0; i < argc; i++) {
-		new_argv[i] = quote_arg(argv[i]);
+		new_argv[i] = qa(argv[i]);
 		len += strlen(new_argv[i]) + 1;
 	}
 
