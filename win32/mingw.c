@@ -1938,6 +1938,16 @@ int mingw_chdir(const char *dirname)
 	if (realdir) {
 		fix_path_case(realdir);
 		ret = chdir(realdir);
+
+		if (ret < 0) {
+			char shortpath[PATH_MAX];
+			int saved_errno = errno;
+
+			if (GetShortPathNameA(realdir, shortpath, PATH_MAX))
+				ret = chdir(shortpath);
+			else
+				errno = saved_errno;
+		}
 	}
 	free(realdir);
 
