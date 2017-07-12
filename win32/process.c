@@ -131,13 +131,13 @@ void initialize_critical_sections(void)
 static intptr_t mingw_spawnve(int mode,
 		const char *cmd, char *const *argv, char *const *env)
 {
-	wchar_t wcmd[PATH_MAX], **wargv, **wenv;
+	wchar_t wcmd[PATH_MAX_LONG], **wargv, **wenv;
 	intptr_t ret;
 
 	wargv = argv_to_wargv(argv, NULL);
 	wenv = argv_to_wargv(env, NULL);
-	if (!MultiByteToWideChar(CP_ACP, 0, mingw_pathconv(cmd), -1, wcmd, PATH_MAX) ||
-	    wargv == WARGV_OOM || wenv == WARGV_OOM) {
+	wcscpy(wcmd, mingw_pathconv(cmd));
+	if (wargv == WARGV_OOM || wenv == WARGV_OOM) {
 		errno = ENOMEM;
 		return -1;
 	}
@@ -166,7 +166,7 @@ static intptr_t mingw_spawnve(int mode,
 	 * We cannot use _P_WAIT here because we need to kill spawned processes
 	 * if we're killed, and _P_WAIT does not let us.
 	 */
-	ret = _wspawnve(_P_NOWAIT, wcmd,
+	ret = _wspawnve(_P_NOWAIT, wcmd + (wcsncmp(wcmd, L"\\\\?\\", 4) ? 0 : 4),
 		(const wchar_t *const *)wargv, (const wchar_t *const *)wenv);
 
 	if (ret != (intptr_t)-1)
@@ -415,8 +415,6 @@ spawnveq(int mode, const char *path, char *const *argv, char *const *env)
 
 	char *(FAST_FUNC *qa)(const char *);
 	qa = is_msys2_cmd(path) ? quote_arg_msys2 : quote_arg;
-
-	path = mingw_pathconv(path);
 
 	/*
 	 * Require that the file exists, is a regular file and is executable.
