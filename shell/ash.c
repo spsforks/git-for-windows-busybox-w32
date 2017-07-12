@@ -2356,8 +2356,8 @@ stack_add_ext_space(const char *path)
 {
 	char *p;
 
-	path = mingw_pathconv(path);
 	p = growstackto(strlen(path) + 5);
+
 	strcpy(p, path);
 	return p;
 }

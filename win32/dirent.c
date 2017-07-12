@@ -8,10 +8,10 @@ struct DIR {
 	int got_dotdot;
 };
 
-static inline void finddata2dirent(struct dirent *ent, WIN32_FIND_DATAA *fdata)
+static inline void finddata2dirent(struct dirent *ent, WIN32_FIND_DATAW *fdata)
 {
 	/* copy file name from WIN32_FIND_DATA to dirent */
-	strcpy(ent->d_name, fdata->cFileName);
+	WideCharToMultiByte(CP_UTF8, 0, fdata->cFileName, -1, ent->d_name, PATH_MAX_LONG, NULL, NULL);
 
 	if ((fdata->dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
 			(fdata->dwReserved0 == IO_REPARSE_TAG_SYMLINK ||
@@ -24,10 +24,15 @@ static inline void finddata2dirent(struct dirent *ent, WIN32_FIND_DATAA *fdata)
 		ent->d_type = DT_REG;
 }
 
+static inline int wisdirsep(wchar_t w)
+{
+	return w == L'\\' || w == L'/';
+}
+
 DIR *opendir(const char *name)
 {
-	char pattern[MAX_PATH];
-	WIN32_FIND_DATAA fdata;
+	wchar_t *wpath, pattern[PATH_MAX_LONG];
+	WIN32_FIND_DATAW fdata;
 	HANDLE h;
 	int len;
 	DIR *dir;
@@ -37,24 +42,24 @@ DIR *opendir(const char *name)
 		errno = EINVAL;
 		return NULL;
 	}
-	name = mingw_pathconv(name);
+	wpath = mingw_pathconv(name);
 	/* check that the pattern won't be too long for FindFirstFileA */
-	len = strlen(name);
-	if (len + 2 >= MAX_PATH) {
+	len = wcslen(wpath);
+	if (len + 2 >= PATH_MAX_LONG) {
 		errno = ENAMETOOLONG;
 		return NULL;
 	}
 	/* copy name to temp buffer */
-	strcpy(pattern, name);
+	wcscpy(pattern, wpath);
 
 	/* append optional '/' and wildcard '*' */
-	if (len && !is_dir_sep(pattern[len - 1]))
-		pattern[len++] = '/';
-	pattern[len++] = '*';
-	pattern[len] = 0;
+	if (len && !wisdirsep(pattern[len - 1]))
+		pattern[len++] = L'\\';
+	pattern[len++] = L'*';
+	pattern[len] = L'\0';
 
 	/* open find handle */
-	h = FindFirstFileA(pattern, &fdata);
+	h = FindFirstFileW(pattern, &fdata);
 	if (h == INVALID_HANDLE_VALUE) {
 		DWORD err = GetLastError();
 		errno = (err == ERROR_DIRECTORY) ? ENOTDIR : err_win_to_posix();
@@ -81,8 +86,8 @@ struct dirent *readdir(DIR *dir)
 	/* if first entry, dirent has already been set up by opendir */
 	if (dir->not_first) {
 		/* get next entry and convert from WIN32_FIND_DATA to dirent */
-		WIN32_FIND_DATAA fdata;
-		if (FindNextFileA(dir->dd_handle, &fdata)) {
+		WIN32_FIND_DATAW fdata;
+		if (FindNextFileW(dir->dd_handle, &fdata)) {
 			finddata2dirent(&dir->dd_dir, &fdata);
 		} else if (!dir->got_dot) {
 			strcpy(dir->dd_dir.d_name, ".");

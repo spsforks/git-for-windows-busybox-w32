@@ -574,6 +574,8 @@ int utimes(const char *file_name, const struct timeval times[2]);
 /*
  * MinGW specific
  */
+#define PATH_MAX_LONG 4096
+
 #define is_dir_sep(c) ((c) == '/' || (c) == '\\')
 #define is_unc_path(x) (strlen(x) > 4 && is_dir_sep(x[0]) && \
 							is_dir_sep(x[1]) && !is_dir_sep(x[2]))
@@ -622,7 +624,7 @@ char *is_suffixed_with_case(const char *string, const char *key) FAST_FUNC;
 const char *get_busybox_exec_path(void);
 void init_winsock(void);
 
-const char *mingw_pathconv(const char *path);
+wchar_t *mingw_pathconv(const char *path);
 int has_bat_suffix(const char *p);
 int has_exe_suffix(const char *p);
 int has_exe_suffix_or_dot(const char *name);
