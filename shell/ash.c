@@ -4951,6 +4951,7 @@ waitpid_child(int *status, DWORD blocking)
 				GetExitCodeProcess(proclist[idx], &win_status);
 				*status = exit_code_to_wait_status(win_status);
 				pid = GetProcessId(proclist[idx]);
+				CloseHandle(proclist[idx]);
 				break;
 			}
 		} while (blocking && !pending_int && waitcmd_int != 1);
@@ -17056,6 +17057,13 @@ spawn_forkshell(struct forkshell *fs, struct job *jp, union node *n, int mode)
 	sprintf(buf, "%p", new->hMapFile);
 	argv[2] = buf;
 	ret = mingw_spawn_applet(P_NOWAIT, (char *const *)argv, NULL);
+	if (ret != -1) {
+	    HANDLE hCurrentProcess = GetCurrentProcess();
+		if (!DuplicateHandle(hCurrentProcess, (HANDLE)ret, hCurrentProcess,
+				(HANDLE*)&ret, 0, TRUE, DUPLICATE_SAME_ACCESS)) {
+			ret = -1;
+		}
+	}
 	CloseHandle(new->hMapFile);
 	UnmapViewOfFile(new);
 	if (ret == -1) {
