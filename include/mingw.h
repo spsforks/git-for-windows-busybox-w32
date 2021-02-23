@@ -356,7 +356,7 @@ int clock_settime(clockid_t clockid, const struct timespec *tp);
 mode_t mingw_umask(mode_t mode);
 #define umask mingw_umask
 
-#define DEFAULT_UMASK 0002
+#define DEFAULT_UMASK 0022
 
 IMPL(fchmod,int,0,int fildes UNUSED_PARAM, mode_t mode UNUSED_PARAM);
 NOIMPL(fchown,int fd UNUSED_PARAM, uid_t uid UNUSED_PARAM, gid_t gid UNUSED_PARAM);
