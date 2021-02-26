@@ -96,8 +96,10 @@ testing()
 
   exec 3>&1
   exec 4>&2
-  exec >"$LOGPATH"
-  exec 2>&1
+  exec 5>"$LOGPATH"
+  BASH_XTRACEFD=5
+  exec 1>&5
+  exec 2>&5
 
   [ -z "$DEBUG" ] || set -x
 
@@ -123,7 +125,7 @@ testing()
     echo "FAIL: $NAME"
     [ -z "$VERBOSE" ] || diff -u expected actual
   fi
-  rm -f input expected actual .output.$$
+  rm -f input expected actual
 
   return $RETVAL
 }
