@@ -37,6 +37,7 @@ DIR *opendir(const char *name)
 		errno = EINVAL;
 		return NULL;
 	}
+	name = mingw_pathconv(name);
 	/* check that the pattern won't be too long for FindFirstFileA */
 	len = strlen(name);
 	if (len + 2 >= MAX_PATH) {
