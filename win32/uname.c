@@ -1,6 +1,7 @@
 #include "libbb.h"
 /* After libbb.h, since it needs sys/types.h on some systems */
 #include <sys/utsname.h>
+#include "BB_VER.h"
 
 int uname(struct utsname *name)
 {
@@ -8,7 +9,7 @@ int uname(struct utsname *name)
 	OSVERSIONINFO os_info;
 	SYSTEM_INFO sys_info;
 
-	strcpy(name->sysname, "Windows_NT");
+	strcpy(name->sysname, "MINGW(BusyBox/Win32)");
 
 	if ( gethostname(name->nodename, sizeof(name->nodename)) != 0 ) {
 		strcpy(name->nodename, unk);
@@ -18,7 +19,8 @@ int uname(struct utsname *name)
 	os_info.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);
 
 	GetVersionEx(&os_info);
-	sprintf(name->release, "%u.%u", (unsigned int)os_info.dwMajorVersion,
+	sprintf(name->release, "2.0("BB_VER"/%u.%u)",
+			(unsigned int)os_info.dwMajorVersion,
 			(unsigned int)os_info.dwMinorVersion);
 	sprintf(name->version, "%u", (unsigned int)os_info.dwBuildNumber);
 
