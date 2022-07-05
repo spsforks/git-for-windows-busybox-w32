@@ -53,7 +53,11 @@ int which_main(int argc UNUSED_PARAM, char **argv)
 		int missing = 1;
 
 #if ENABLE_PLATFORM_MINGW32 && ENABLE_FEATURE_SH_STANDALONE
-		if (sh_standalone && find_applet_by_name(*argv) >= 0) {
+		if (
+#if !ENABLE_FEATURE_PREFER_APPLETS
+			sh_standalone &&
+#endif
+			find_applet_by_name(*argv) >= 0) {
 			missing = 0;
 			puts(applet_to_exe(*argv));
 			if (!option_mask32) /* -a not set */
