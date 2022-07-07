@@ -113,6 +113,18 @@ testing "sh read with \\CRLF" \
 testing "sh read with \\CR" \
 	"printf '1\\\\\r2\\r\\n' | { read var; printf \"\${var}\\\\n\"; }" \
 	"1\r2\n" "" ""
+
+case "$COMSPEC" in
+*\\cmd.exe)
+	testing "'cmd //c' works" \
+	"cmd //c dir /b /w sh.tests" \
+	"sh.tests\r
+" \
+	"" \
+	""
+	;;
+esac
+
 SKIP=
 
 exit $FAILCOUNT
