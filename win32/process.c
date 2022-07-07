@@ -386,6 +386,17 @@ static int is_msys2_cmd(const char *cmd)
 		!_strnicmp(cmd + len - 3, "bin", 3);
 }
 
+static int is_cmd_exe(const char *cmd)
+{
+	int len = strlen(cmd);
+
+	if (len > 4 && !_strnicmp(cmd + len - 4, ".exe", 4))
+		len -= 4;
+
+	return len > 4 && is_slash(cmd[len - 4]) &&
+		!_strnicmp(cmd + len - 3, "cmd", 3);
+}
+
 static intptr_t
 spawnveq(int mode, const char *path, char *const *argv, char *const *env)
 {
@@ -418,7 +429,10 @@ spawnveq(int mode, const char *path, char *const *argv, char *const *env)
 	argc = string_array_len((char **)argv);
 	new_argv = xzalloc(sizeof(*argv)*(argc+1));
 	for (i = 0; i < argc; i++) {
-		new_argv[i] = qa(argv[i]);
+		new_argv[i] =
+			i == 1 && !strcmp(argv[1], "//c") && is_cmd_exe(path) ?
+			xstrdup("/c") :
+			qa(argv[i]);
 		len += strlen(new_argv[i]) + 1;
 	}
 
