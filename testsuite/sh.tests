@@ -125,6 +125,14 @@ case "$COMSPEC" in
 	;;
 esac
 
+testing "CR in backticks is only eaten if preceding a NL" \
+	"cr=\"\$(printf \\\\015)\"; printf %s \"\$cr\" | hexdump -C" \
+	"00000000  0d                                                |.|
+00000001
+" \
+	"" \
+	""
+
 SKIP=
 
 exit $FAILCOUNT
