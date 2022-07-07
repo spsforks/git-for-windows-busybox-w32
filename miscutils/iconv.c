@@ -152,15 +152,18 @@ static int iso2022jp_flush(csconv_t *cv, uchar *buf, int bufsize);
 	CP_ALIAS(12001, "UCS4BE") \
 	CP_ALIAS(12001, "UCS-4BE") \
 \
-	/* Default is little endian, because the platform is */ \
-	CP_ALIAS(1200, "UTF16") \
-	CP_ALIAS(1200, "UTF-16") \
-	CP_ALIAS(1200, "UCS2") \
-	CP_ALIAS(1200, "UCS-2") \
-	CP_ALIAS(12000, "UTF32") \
-	CP_ALIAS(12000, "UTF-32") \
-	CP_ALIAS(12000, "UCS4") \
-	CP_ALIAS(12000, "UCS-4") \
+	/* \
+	 * Default is big endian. \
+	 * See rfc2781 4.3 Interpreting text labelled as UTF-16. \
+	 */ \
+	CP_ALIAS(1201, "UTF16") \
+	CP_ALIAS(1201, "UTF-16") \
+	CP_ALIAS(1201, "UCS2") \
+	CP_ALIAS(1201, "UCS-2") \
+	CP_ALIAS(12001, "UTF32") \
+	CP_ALIAS(12001, "UTF-32") \
+	CP_ALIAS(12001, "UCS4") \
+	CP_ALIAS(12001, "UCS-4") \
 \
 	/* copy from libiconv `iconv -l` */ \
 	/* !IsValidCodePage(367) */ \
