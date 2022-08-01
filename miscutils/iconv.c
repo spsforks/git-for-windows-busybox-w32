@@ -540,6 +540,7 @@ static int iso2022jp_flush(csconv_t *cv, uchar *buf, int bufsize);
 	/* 50937 		EBCDIC US-Canada and Traditional Chinese */ \
 	/* 50939 		EBCDIC Japanese (Latin) Extended and Japanese */ \
 	CP_ALIAS(51932, "euc-jp") /* EUC Japanese */ \
+	CP_ALIAS(51932, "eucJP")  /* EUC Japanese */ \
 	CP_ALIAS(51936, "EUC-CN") /* EUC Simplified Chinese; Chinese Simplified (EUC) */ \
 	CP_ALIAS(51949, "euc-kr") /* EUC Korean */ \
 	/* 51950 		EUC Traditional Chinese */ \
