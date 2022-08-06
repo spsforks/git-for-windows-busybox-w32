@@ -1,0 +1,42 @@
+#!/bin/sh
+set -x
+
+# Copyright 2022 by Johannes Schindelin <johannes.schindelin@gmx.de>
+# Licensed under GPLv2, see file LICENSE in this source tree.
+
+. ./testing.sh
+
+# testing "description" "command" "result" "infile" "stdin"
+pseudo_root="$(cygpath -am /)"
+res=$?
+case "$pseudo_root" in */) s="ends in a slash";; *) s=;; esac
+
+testing "pseudo root" 'echo $res,$s,"$pseudo_root"' "0,,$pseudo_root
+" "" ""
+
+testing "cygpath -aw" "cygpath -aw /c/ /c/123 /c/324" 'C:\\
+C:\\123
+C:\\324
+' "" ""
+
+testing "cygpath -am" "cygpath -am /c/ /c/123 /c/324 / /lib" "C:/
+C:/123
+C:/324
+$pseudo_root
+${pseudo_root}/lib
+" "" ""
+
+testing "cygpath -u" 'cygpath -u C:\\ abc' '/c/
+abc
+' "" ""
+
+testing "cygpath and dots" 'cygpath -am . ./. ../. ./..' "$PWD
+$PWD
+${PWD%/*}
+${PWD%/*}
+" "" ""
+
+testing "cygpath ''" '! cygpath "" abc 2>&1' "cygpath: can't convert empty path
+" "" ""
+
+exit $FAILCOUNT
