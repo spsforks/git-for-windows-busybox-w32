@@ -20,10 +20,11 @@ WRFLAGS := -D"BB_VER=$(BB_VER)" \
 quiet_cmd_windres = WINDRES $@
       cmd_windres = $(WINDRES) $(WRFLAGS) $< $@
 
-%.o: %.rc FORCE
+%.o: %.rc
 	$(call if_changed,windres)
 
 win32/resources/resources.o: win32/resources/resources.rc .config
 win32/resources/resources.o: win32/resources/aterm.ico win32/resources/sterm.ico
 win32/resources/resources.o: win32/resources/utf8.manifest
 win32/resources/resources.o: win32/resources/app.manifest
+win32/resources/resources.o: Makefile Makefile.flags
