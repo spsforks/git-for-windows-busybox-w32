@@ -133,6 +133,4 @@ testing "CR in backticks is only eaten if preceding a NL" \
 	"" \
 	""
 
-SKIP=
-
 exit $FAILCOUNT
