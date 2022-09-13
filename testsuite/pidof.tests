@@ -16,7 +16,7 @@ testing "pidof (exit with success)" "pidof pidof > /dev/null; echo \$?" \
 	"0\n" "" ""
 # We can get away with this because it says #!/bin/sh up top.
 
-testing "pidof this" "pidof pidof.tests | grep -o -w $$" "$$\n" "" ""
+testing "pidof this" "pidof sh | grep -o -w $$" "$$\n" "" ""
 
 test x"`cat /proc/1/comm`" = x"init" && {
 optional FEATURE_PIDOF_SINGLE
