@@ -10,7 +10,8 @@ static const char *path_convert_internal(const char *path,
     char *p;
     DWORD len;
 
-    if (flags & PATH_CONVERT_ABSOLUTE) {
+    if ((flags & PATH_CONVERT_ABSOLUTE) ||
+		((flags & (PATH_CONVERT_WINDOWS | PATH_CONVERT_MIXED)) && *path == '/')) {
         wchar_t *wpath = mingw_pathconv(path);
 
         if (!_wcsnicmp(wpath, L"\\\\?\\", 4))

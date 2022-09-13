@@ -48,4 +48,7 @@ testing "cygpath -p" 'cygpath -pam .:' "$PWD;$PWD
 testing "cygpath -u" "cygpath -pau \"$pseudo_root;${pseudo_root}/lib\"" "/:/lib
 " "" ""
 
+testing "cygpath -m <unix-style-path>" "cygpath -m /lib" "$pseudo_root/lib
+" "" ""
+
 exit $FAILCOUNT
