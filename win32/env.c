@@ -1,4 +1,5 @@
 #include "libbb.h"
+#include "path-convert.h"
 
 #undef getenv
 #undef putenv
@@ -24,16 +25,20 @@ char * FAST_FUNC mingw_getenv(const char *name)
 int FAST_FUNC setenv(const char *name, const char *value, int replace)
 {
 	int out;
-	char *envstr;
+	char *envstr, *to_free = NULL;
 
 	if (!name || !*name || strchr(name, '=') || !value) return -1;
 	if (!replace) {
 		if (getenv(name)) return 0;
 	}
 
+	if (!strcmp(name, "PATH"))
+		value = to_free = path_convert_path_list(value, PATH_CONVERT_WINDOWS);
+
 	envstr = xasprintf("%s=%s", name, value);
 	out = mingw_putenv(envstr);
 	free(envstr);
+	free(to_free);
 
 	return out;
 }
