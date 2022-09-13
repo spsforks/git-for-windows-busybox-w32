@@ -353,6 +353,10 @@ typedef long arith_t;
 # define CLEAR_RANDOM_T(rnd) ((void)0)
 #endif
 
+#if ENABLE_PLATFORM_MINGW32
+# include "path-convert.h"
+#endif
+
 #include "NUM_APPLETS.h"
 #if NUM_APPLETS == 1
 /* STANDALONE does not make sense, and won't compile */
@@ -2847,34 +2851,19 @@ bltinlookup(const char *name)
 static char *
 fix_pathvar(const char *path, int len)
 {
-	char *newpath = xstrdup(path);
-	char *p;
-	int modified = FALSE;
+	char *newpath = path_convert_path_list(path + len, PATH_CONVERT_MIXED);
+	size_t len2;
 
-	p = newpath + len;
-	while (*p) {
-		if (*p != ':' && *p != ';') {
-			/* skip drive */
-			if (isalpha(*p) && p[1] == ':')
-				p += 2;
-			/* skip through path component */
-			for (; *p != '\0' && *p != ':' && *p != ';'; ++p)
-				continue;
-		}
-		/* *p is ':', ';' or '\0' here */
-		if (*p == ':') {
-			*p++ = ';';
-			modified = TRUE;
-		}
-		else if (*p == ';') {
-			++p;
-		}
-	}
-
-	if (!modified) {
+	if (!strcmp(path + len, newpath)) {
 		free(newpath);
-		newpath = NULL;
+		return NULL;
 	}
+
+	len2 = strlen(newpath);
+	newpath = xrealloc(newpath, len + len2 + 1);
+	memmove(newpath + len, newpath, len2 + 1);
+	memcpy(newpath, path, len);
+
 	return newpath;
 }
 

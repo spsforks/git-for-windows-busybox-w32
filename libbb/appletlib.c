@@ -31,6 +31,7 @@
 static inline int *get_perrno(void) { return &errno; }
 
 #include "busybox.h"
+#include "path-convert.h"
 
 #if !(defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) \
     || defined(__APPLE__) \
@@ -1295,6 +1296,22 @@ get_script_content(unsigned n UNUSED_PARAM)
 
 #endif /* defined(SINGLE_APPLET_MAIN) */
 
+#if ENABLE_PLATFORM_MINGW32
+static char *xwcstoutf(wchar_t *wcs)
+{
+	DWORD size = WideCharToMultiByte(CP_UTF8, 0, wcs, -1, NULL, 0, NULL, NULL) + 1;
+	char *buf;
+
+	if (!size)
+		bb_error_msg_and_die("could not convert '%ls' to UTF-8", wcs);
+	buf = xmalloc(size);
+	if (WideCharToMultiByte(CP_UTF8, 0, wcs, -1, buf, size, NULL, NULL))
+		return buf;
+	free(buf);
+	bb_error_msg_and_die("could not convert '%ls' to UTF-8", wcs);
+}
+#endif
+
 #if ENABLE_BUILD_LIBBUSYBOX
 int lbb_main(char **argv)
 #else
@@ -1409,19 +1426,29 @@ int main(int argc UNUSED_PARAM, char **argv)
 			/* Manually convert non-ASCII environment entries from UTF-16 */
 			for (i = 0; wenv[i]; i++) {
 				for (p = wenv + i; *p; p++)
-					if (*p & ~0x7f) {
-						/* Non-ASCII name or value */
-						DWORD size = WideCharToMultiByte(CP_UTF8, 0,
-								wenv + i, -1, NULL, 0, NULL, NULL) + 1;
-						char *buf;
+					if (!_wcsnicmp(wenv + i, L"PATH=", 5)) {
+						char *orig = xwcstoutf(wenv + i + 5);
+						char *converted = path_convert_path_list(orig, PATH_CONVERT_MIXED);
+						size_t len;
 
-						if (!size)
-							break;
-						buf = malloc(size);
-						if (!buf)
-							bb_error_msg_and_die("Out of memory");
-						if (WideCharToMultiByte(CP_UTF8, 0,
-								wenv + i, -1, buf, size, NULL, NULL))
+						if (!converted)
+							bb_error_msg_and_die("could not convert path list '%s'", orig);
+
+						len = strlen(converted);
+						converted = xrealloc(converted, len + 6);
+						memmove(converted + 5, converted, len + 1);
+						memcpy(converted, "PATH=", 5);
+
+						putenv(converted);
+
+						free(converted);
+						free(orig);
+						break;
+					} else if (*p & ~0x7f) {
+						/* Non-ASCII name or value */
+						char *buf = xwcstoutf(wenv + i);
+
+						if (buf)
 							/* if we could not convert, punt */
 							putenv(buf);
 						free(buf);
