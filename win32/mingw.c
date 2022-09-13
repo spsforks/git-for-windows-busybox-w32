@@ -1730,6 +1730,25 @@ int FAST_FUNC create_junction(const char *oldpath, const char *newpath)
 	return -1;
 }
 
+static wchar_t *normalize_ntpath(wchar_t *wbuf)
+{
+	/* fix absolute path prefixes */
+	if (wbuf[0] == L'\\') {
+		/* strip NT namespace prefixes */
+		if (!wcsncmp(wbuf, L"\\??\\", 4) ||
+		    !wcsncmp(wbuf, L"\\\\?\\", 4))
+			wbuf += 4;
+		else if (!_wcsnicmp(wbuf, L"\\DosDevices\\", 12))
+			wbuf += 12;
+		/* replace remaining '...UNC\' with '\\' */
+		if (!_wcsnicmp(wbuf, L"UNC\\", 4)) {
+			wbuf += 2;
+			*wbuf = L'\\';
+		}
+	}
+	return wbuf;
+}
+
 static char *normalize_ntpathA(char *buf)
 {
 	/* fix absolute path prefixes */
@@ -1828,30 +1847,6 @@ char * FAST_FUNC realpath(const char *path, char *resolved_path)
 	return NULL;
 }
 
-static wchar_t *normalize_ntpath(wchar_t *wbuf)
-{
-	int i;
-	/* fix absolute path prefixes */
-	if (wbuf[0] == '\\') {
-		/* strip NT namespace prefixes */
-		if (!wcsncmp(wbuf, L"\\??\\", 4) ||
-		    !wcsncmp(wbuf, L"\\\\?\\", 4))
-			wbuf += 4;
-		else if (!wcsnicmp(wbuf, L"\\DosDevices\\", 12))
-			wbuf += 12;
-		/* replace remaining '...UNC\' with '\\' */
-		if (!wcsnicmp(wbuf, L"UNC\\", 4)) {
-			wbuf += 2;
-			*wbuf = '\\';
-		}
-	}
-	/* convert backslashes to slashes */
-	for (i = 0; wbuf[i]; i++)
-		if (wbuf[i] == '\\')
-			wbuf[i] = '/';
-	return wbuf;
-}
-
 /*
  * This is the stucture required for reparse points with the tag
  * IO_REPARSE_TAG_APPEXECLINK.  The Buffer member contains four
@@ -1921,8 +1916,13 @@ char * FAST_FUNC xmalloc_readlink(const char *pathname)
 			bufsiz = WideCharToMultiByte(CP_ACP, 0, name, -1, NULL, 0, 0, 0);
 			if (bufsiz) {
 				buf = xmalloc(bufsiz);
-				if (WideCharToMultiByte(CP_ACP, 0, name, -1, buf, bufsiz, 0, 0))
+				if (WideCharToMultiByte(CP_ACP, 0, name, -1, buf, bufsiz, 0, 0)) {
+					int j;
+					for (j = 0; j < bufsiz - 1; j++)
+						if (buf[j] == '\\')
+							buf[j] = '/';
 					return buf;
+				}
 				free(buf);
 			}
 		}
