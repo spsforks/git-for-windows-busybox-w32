@@ -29,6 +29,7 @@ enum {
     OPT_mixed     = (1 << 1),
     OPT_unix      = (1 << 2),
     OPT_windows   = (1 << 3),
+    OPT_path_list = (1 << 4),
 };
 
 int cygpath_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
@@ -42,9 +43,10 @@ int cygpath_main(int argc UNUSED_PARAM, char **argv)
         "mixed\0" No_argument "m"
         "unix\0" No_argument "u"
         "windows\0" No_argument "w"
+        "path\0" No_argument "p"
         ;
 #endif
-    int opt = getopt32long(argv, "amuw", cygpath_longopts);
+    int opt = getopt32long(argv, "amuwp", cygpath_longopts);
     argv += optind;
     argc -= optind;
 
@@ -67,13 +69,17 @@ int cygpath_main(int argc UNUSED_PARAM, char **argv)
             return EXIT_FAILURE;
         }
 
-        result = path_convert(path, buffer, sizeof(buffer), flags);
+        if (opt & OPT_path_list)
+            result = to_free = path_convert_path_list(path, flags);
+        else
+            result = path_convert(path, buffer, sizeof(buffer), flags);
 
         if (!result)
             return EXIT_FAILURE;
 
         printf("%s\n", result);
 
+        free(to_free);
     }
 
     return EXIT_SUCCESS;

@@ -39,4 +39,13 @@ ${PWD%/*}
 testing "cygpath ''" '! cygpath "" abc 2>&1' "cygpath: can't convert empty path
 " "" ""
 
+testing "cygpath -p" 'cygpath -pam .:./.:/c/' "$PWD;$PWD;C:/
+" "" ""
+
+testing "cygpath -p" 'cygpath -pam .:' "$PWD;$PWD
+" "" ""
+
+testing "cygpath -u" "cygpath -pau \"$pseudo_root;${pseudo_root}/lib\"" "/:/lib
+" "" ""
+
 exit $FAILCOUNT

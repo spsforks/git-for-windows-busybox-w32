@@ -12,4 +12,7 @@ enum path_convert_flag {
 const char *path_convert(const char *path, char *output, size_t output_size,
                          enum path_convert_flag flags);
 
+char *path_convert_path_list(const char *path_list,
+                             enum path_convert_flag flags);
+
 #endif
