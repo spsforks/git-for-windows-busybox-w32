@@ -169,7 +169,7 @@ for applet in $applets; do
 		fi
 #		echo "Running test $tsdir/$applet.tests"
 		PATH="$LINKSDIR:$tsdir:$bindir:$PATH" \
-			"$tsdir/$applet.tests"
+			sh "$tsdir/$applet.tests" "" ""
 		rc=$?
 		total_failed=$((total_failed + rc))
 		test $rc -ne 0 && status=1
