@@ -304,7 +304,7 @@ wchar_t *mingw_pathconv(const char *path)
 			pseudo_root[pseudo_root_len++] = L'\\';
 	}
 
-	memcpy(result, pseudo_root, pseudo_root_len * sizeof(wchar_t));
+	memcpy(result, pseudo_root, (pseudo_root_len - !path[1]) * sizeof(wchar_t));
 	return pathconv_rest(result, pseudo_root_len, path + 1);
 }
 
