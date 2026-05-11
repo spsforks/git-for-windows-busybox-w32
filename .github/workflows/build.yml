@@ -6,10 +6,10 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v6
     - uses: git-for-windows/setup-git-for-windows-sdk@v1
       with:
-        flavor: build-installers # this includes all the required tools
+        flavor: full
     - name: restrict PATH to Git for Windows' SDK (and Windows)
       shell: bash
       run: echo 'PATH=/mingw64/bin:/usr/bin/:/c/Windows/system32' >>$GITHUB_ENV
@@ -24,7 +24,7 @@ jobs:
       shell: bash
       run: make -j$(nproc) busybox.exe
     - name: upload busybox artifact
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v6
       with:
         name: busybox
         path: busybox.exe
