@@ -151,6 +151,8 @@ testing "od -F (!DESKTOP little-endian)" \
 	"" "$input"
 SKIP=
 
+# MINGW's _ecvt() uses 3-digit exponents (e.g. "e-033") while glibc uses 2.
+optional PLATFORM_POSIX
 $little_endian || SKIP=1
 testing "od -f (little-endian)" \
         "od -f" \
