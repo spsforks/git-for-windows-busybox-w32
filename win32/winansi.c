@@ -949,7 +949,7 @@ int FAST_FUNC winansi_fputc(int c, FILE *stream)
 	return conv_fwriteCon(stream, s, 1) == EOF ? EOF : (unsigned char )c;
 }
 
-#if !defined(__USE_MINGW_ANSI_STDIO) || !__USE_MINGW_ANSI_STDIO
+#if !defined(_UCRT) && (!defined(__USE_MINGW_ANSI_STDIO) || !__USE_MINGW_ANSI_STDIO)
 /*
  * Prior to Windows 10 vsnprintf was incompatible with the C99 standard.
  * Implement a replacement using _vsnprintf.

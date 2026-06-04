@@ -195,7 +195,7 @@ void console_write(const char *str, int len) FAST_FUNC;
 #define fwrite winansi_fwrite
 #define fputs winansi_fputs
 #define fputc winansi_fputc
-#if !defined(__USE_MINGW_ANSI_STDIO) || !__USE_MINGW_ANSI_STDIO
+#if !defined(_UCRT) && (!defined(__USE_MINGW_ANSI_STDIO) || !__USE_MINGW_ANSI_STDIO)
 #define vsnprintf(buf, size, ...) winansi_vsnprintf(buf, size,  __VA_ARGS__)
 #endif
 #define vfprintf(stream, ...) winansi_vfprintf(stream, __VA_ARGS__)
