@@ -6,7 +6,7 @@
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
 //config:config CHPASSWD
-//config:	bool "chpasswd (18 kb)"
+//config:	bool "chpasswd (19 kb)"
 //config:	default y
 //config:	help
 //config:	Reads a file of user name and password pairs from standard input
@@ -17,7 +17,7 @@
 //config:	default "des"
 //config:	depends on PASSWD || CRYPTPW || CHPASSWD
 //config:	help
-//config:	Possible choices are "d[es]", "m[d5]", "s[ha256]" or "sha512".
+//config:	Possible choices: "d[es]", "m[d5]", "s[ha256]", "sha512", "yescrypt"
 
 //applet:IF_CHPASSWD(APPLET(chpasswd, BB_DIR_USR_SBIN, BB_SUID_DROP))
 

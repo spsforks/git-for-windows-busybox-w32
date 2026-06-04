@@ -50,8 +50,10 @@ typedef struct priv_dumper_t {
 static const char dot_flags_width_chars[] ALIGN1 = ".#-+ 0123456789";
 
 static const char size_conv_str[] ALIGN1 =
-"\x1\x4\x4\x4\x4\x4\x4\x8\x8\x8\x8\010cdiouxXeEfgG";
-
+"\x1\x4\x4\x4\x4\x4\x4\x8\x8\x8\x8\x8""cdiouxXeEfgG";
+/* c  d  i  o  u  x  X  e  E  f  g  G - bytes contain 'bcnt' for the type */
+#define SCS_OFS 12
+#define float_convs (size_conv_str + SCS_OFS + sizeof("cdiouxX")-1)
 static const char int_convs[] ALIGN1 = "diouxX";
 
 dumper_t* FAST_FUNC alloc_dumper(void)
@@ -94,7 +96,7 @@ static NOINLINE int bb_dump_size(FS *fs)
 				while (isdigit(*++fmt))
 					continue;
 			}
-			p = strchr(size_conv_str + 12, *fmt);
+			p = strchr(size_conv_str + SCS_OFS, *fmt);
 			if (!p) {
 				if (*fmt == 's') {
 					bcnt += prec;
@@ -106,7 +108,7 @@ static NOINLINE int bb_dump_size(FS *fs)
 					}
 				}
 			} else {
-				bcnt += p[-12];
+				bcnt += p[-SCS_OFS];
 			}
 		}
 		cur_size += bcnt * fu->reps;
@@ -193,20 +195,26 @@ static NOINLINE void rewrite(priv_dumper_t *dumper, FS *fs)
 
 				++p2;
 				++p1;
+				if (*p1 == 'l') { /* %lld etc */
+					++p2;
+					++p1;
+				}
  DO_INT_CONV:
 				e = strchr(int_convs, *p1); /* "diouxX"? */
 				if (!e)
 					goto DO_BAD_CONV_CHAR;
 				pr->flags = F_INT;
-				if (e > int_convs + 1) /* not d or i? */
+				byte_count_str = "\010\004\002\001";
+				if (e > int_convs + 1) { /* not d or i? */
 					pr->flags = F_UINT;
-				byte_count_str = "\004\002\001";
+					byte_count_str++;
+				}
 				goto DO_BYTE_COUNT;
 			} else
 			if (strchr(int_convs, *p1)) { /* %d etc */
 				goto DO_INT_CONV;
 			} else
-			if (strchr("eEfgG", *p1)) { /* floating point */
+			if (strchr(float_convs, *p1)) { /* floating point */
 				pr->flags = F_DBL;
 				byte_count_str = "\010\004";
 				goto DO_BYTE_COUNT;
@@ -244,7 +252,7 @@ static NOINLINE void rewrite(priv_dumper_t *dumper, FS *fs)
 					pr->flags = F_P;
 					*p1 = 'c';
 					goto DO_BYTE_COUNT_1;
-				case 'u':	/* %_p: chars, 'nul', 'esc' etc for nonprintable */
+				case 'u':	/* %_u: chars, 'nul', 'esc' etc for nonprintable */
 					pr->flags = F_U;
 					/* *p1 = 'c';   set in conv_u */
 					goto DO_BYTE_COUNT_1;
@@ -324,8 +332,7 @@ static NOINLINE void rewrite(priv_dumper_t *dumper, FS *fs)
 			p2 = NULL;
 			for (p1 = pr->fmt; *p1; ++p1)
 				p2 = isspace(*p1) ? p1 : NULL;
-			if (p2)
-				pr->nospace = p2;
+			pr->nospace = p2;
 		}
 	}
 }
@@ -507,37 +514,52 @@ static void bpad(PR *pr)
 		continue;
 }
 
-static const char conv_str[] ALIGN1 =
-	"\0"  "\\""0""\0"
-	"\007""\\""a""\0"  /* \a */
-	"\b"  "\\""b""\0"
-	"\f"  "\\""f""\0"
-	"\n"  "\\""n""\0"
-	"\r"  "\\""r""\0"
-	"\t"  "\\""t""\0"
-	"\v"  "\\""v""\0"
-	;
-
 static void conv_c(PR *pr, unsigned char *p)
 {
-	const char *str = conv_str;
+	const char *str;
+	unsigned char ch;
 
-	do {
-		if (*p == *str) {
-			++str;
-			goto strpr; /* map e.g. '\n' to "\\n" */
-		}
-		str += 4;
-	} while (*str);
+	ch = *p;
+	if (ch == 0 || (ch -= 6, (signed char)ch > 0 && ch <= 7)) {
+		/* map chars 0,7..13 to "\0","\{a,b,t,n,v,f,r}" */
+		str = c_escape_conv_str00 + 3 * ch;
+		goto strpr;
+	}
 
 	if (isprint_asciionly(*p)) {
 		*pr->cchar = 'c';
 		printf(pr->fmt, *p);
 	} else {
+#if defined(__i386__) || defined(__x86_64__)
+		/* Abuse partial register operations */
+		uint32_t buf;
+		unsigned n = *p;
+		asm (           //00000000 00000000 00000000 aabbbccc
+"\n		shll $10,%%eax" //00000000 000000aa bbbccc00 00000000
+"\n		shrw $5,%%ax"   //00000000 000000aa 00000bbb ccc00000
+"\n		shrb $5,%%al"   //00000000 000000aa 00000bbb 00000ccc
+"\n		shll $8,%%eax"  //000000aa 00000bbb 00000ccc 00000000
+"\n		bswapl %%eax"   //00000000 00000ccc 00000bbb 000000aa
+"\n		addl $0x303030,%%eax"
+"\n"		: "=a" (n)
+		: "0" (n)
+		);
+		buf = n;
+		str = (void*)&buf;
+#elif 1
 		char buf[4];
 		/* gcc-8.0.1 needs lots of casts to shut up */
 		sprintf(buf, "%03o", (unsigned)(uint8_t)*p);
 		str = buf;
+#else // use faster version? +20 bytes of code relative to sprintf() method
+		char buf[4];
+		buf[3] = '\0';
+		ch = *p;
+		buf[2] = '0' + (ch & 7); ch >>= 3;
+		buf[1] = '0' + (ch & 7); ch >>= 3;
+		buf[0] = '0' + ch;
+		str = buf;
+#endif
  strpr:
 		*pr->cchar = 's';
 		printf(pr->fmt, str);
@@ -549,10 +571,12 @@ static void conv_u(PR *pr, unsigned char *p)
 	static const char list[] ALIGN1 =
 		"nul\0soh\0stx\0etx\0eot\0enq\0ack\0bel\0"
 		"bs\0_ht\0_lf\0_vt\0_ff\0_cr\0_so\0_si\0_"
-		"dle\0dcl\0dc2\0dc3\0dc4\0nak\0syn\0etb\0"
+		"dle\0dc1\0dc2\0dc3\0dc4\0nak\0syn\0etb\0"
 		"can\0em\0_sub\0esc\0fs\0_gs\0_rs\0_us";
+	/* NB: bug: od uses %_u to implement -a,
+	 * but it should use "nl", not "lf", for char #10.
+	 */
 
-	/* od used nl, not lf */
 	if (*p <= 0x1f) {
 		*pr->cchar = 's';
 		printf(pr->fmt, list + (4 * (int)*p));
@@ -571,7 +595,6 @@ static void conv_u(PR *pr, unsigned char *p)
 static NOINLINE void display(priv_dumper_t* dumper)
 {
 	unsigned char *bp;
-	unsigned char savech = '\0';
 
 	while ((bp = get(dumper)) != NULL) {
 		FS *fs;
@@ -592,24 +615,41 @@ static NOINLINE void display(priv_dumper_t* dumper)
 					PR *pr;
 					for (pr = fu->nextpr; pr; dumper->pub.address += pr->bcnt,
 								bp += pr->bcnt, pr = pr->nextpr) {
+						unsigned char savech;
+
 						if (dumper->eaddress
 						 && dumper->pub.address >= dumper->eaddress
 						) {
+#if ENABLE_XXD
 							if (dumper->pub.xxd_eofstring) {
 								/* xxd support: requested to not pad incomplete blocks */
 								fputs_stdout(dumper->pub.xxd_eofstring);
 								return;
 							}
+#endif
+#if ENABLE_OD
+							if (dumper->pub.od_eofstring) {
+								/* od support: requested to not pad incomplete blocks */
+								/* ... but do print final offset */
+								fputs_stdout(dumper->pub.od_eofstring);
+								goto endfu;
+							}
+#endif
 							if (!(pr->flags & (F_TEXT | F_BPAD)))
 								bpad(pr);
 						}
+						savech = '\0';
 						if (cnt == 1 && pr->nospace) {
 							savech = *pr->nospace;
 							*pr->nospace = '\0';
 						}
 						switch (pr->flags) {
 						case F_ADDRESS:
-							printf(pr->fmt, (unsigned long long) dumper->pub.address + dumper->pub.xxd_displayoff);
+							printf(pr->fmt, (unsigned long long) dumper->pub.address
+#if ENABLE_XXD
+								+ dumper->pub.xxd_displayoff
+#endif
+							);
 							break;
 						case F_BPAD:
 							printf(pr->fmt, "");
@@ -637,22 +677,32 @@ static NOINLINE void display(priv_dumper_t* dumper)
 							break;
 						}
 						case F_INT: {
-							int ival;
-							short sval;
+							union {
+								int16_t ival16;
+								int32_t ival32;
+								int64_t ival64;
+							} u;
+							int value = (signed char)*bp;
 
 							switch (pr->bcnt) {
 							case 1:
-								printf(pr->fmt, (int) *bp);
 								break;
 							case 2:
-								memcpy(&sval, bp, sizeof(sval));
-								printf(pr->fmt, (int) sval);
+								move_from_unaligned16(u.ival16, bp);
+								value = u.ival16;
 								break;
 							case 4:
-								memcpy(&ival, bp, sizeof(ival));
-								printf(pr->fmt, ival);
+								move_from_unaligned32(u.ival32, bp);
+								value = u.ival32;
 								break;
+							case 8:
+								move_from_unaligned64(u.ival64, bp);
+//A hack. Users _must_ use %llX formats to not truncate high bits
+								printf(pr->fmt, (long long)u.ival64);
+								goto skip;
 							}
+							printf(pr->fmt, value);
+ skip:
 							break;
 						}
 						case F_P:
@@ -662,32 +712,35 @@ static NOINLINE void display(priv_dumper_t* dumper)
 							printf(pr->fmt, (char *) bp);
 							break;
 						case F_TEXT:
-							printf(pr->fmt);
+							fputs_stdout(pr->fmt);
 							break;
 						case F_U:
 							conv_u(pr, bp);
 							break;
 						case F_UINT: {
-							unsigned ival;
-							unsigned short sval;
-
+							union {
+								uint16_t uval16;
+								uint32_t uval32;
+							} u;
+							unsigned value = (unsigned char)*bp;
 							switch (pr->bcnt) {
 							case 1:
-								printf(pr->fmt, (unsigned) *bp);
 								break;
 							case 2:
-								memcpy(&sval, bp, sizeof(sval));
-								printf(pr->fmt, (unsigned) sval);
+								move_from_unaligned16(u.uval16, bp);
+								value = u.uval16;
 								break;
 							case 4:
-								memcpy(&ival, bp, sizeof(ival));
-								printf(pr->fmt, ival);
+								move_from_unaligned32(u.uval32, bp);
+								value = u.uval32;
 								break;
+							/* case 8: no users yet */
 							}
+							printf(pr->fmt, value);
 							break;
 						}
 						}
-						if (cnt == 1 && pr->nospace) {
+						if (savech) {
 							*pr->nospace = savech;
 						}
 					}
@@ -695,7 +748,7 @@ static NOINLINE void display(priv_dumper_t* dumper)
 			}
 		}
 	}
-
+ IF_OD(endfu:)
 	if (dumper->endfu) {
 		PR *pr;
 		/*
@@ -711,10 +764,14 @@ static NOINLINE void display(priv_dumper_t* dumper)
 		for (pr = dumper->endfu->nextpr; pr; pr = pr->nextpr) {
 			switch (pr->flags) {
 			case F_ADDRESS:
-				printf(pr->fmt, (unsigned long long) dumper->eaddress + dumper->pub.xxd_displayoff);
+				printf(pr->fmt, (unsigned long long) dumper->eaddress
+#if ENABLE_XXD
+					+ dumper->pub.xxd_displayoff
+#endif
+				);
 				break;
 			case F_TEXT:
-				printf(pr->fmt);
+				fputs_stdout(pr->fmt);
 				break;
 			}
 		}

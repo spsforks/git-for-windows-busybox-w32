@@ -17,13 +17,13 @@ then
 fi
 
 # Some people were bitten by their system lacking a (proper) od
-od --help >/dev/null 2>&1
-if test $? = 127; then
+od -v -b </dev/null >/dev/null
+if test $? != 0; then
 	echo 'od tool is not installed or cannot accept "-v -b" options'
 	exit 1
 fi
 
-bzip2 --help >/dev/null 2>&1
+bzip2 </dev/null >/dev/null 2>&1
 if test $? = 127; then
 	echo 'bzip2 is not installed'
 	exit 1
@@ -90,6 +90,7 @@ concatenate_scripts() {
 	done
 }
 
+(
 exec >"$target.$$"
 
 if [ $n -ne 0 ]
@@ -127,5 +128,6 @@ then
 		-e 's/$/ \\/'
 	printf '\n'
 fi
+)
 
 mv -- "$target.$$" "$target"

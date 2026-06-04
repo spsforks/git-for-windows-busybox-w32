@@ -9,7 +9,7 @@
  * Kuhn's copyrights are licensed GPLv2-or-later.  File as a whole remains GPLv2.
  */
 //config:config WGET
-//config:	bool "wget (38 kb)"
+//config:	bool "wget (41 kb)"
 //config:	default y
 //config:	help
 //config:	wget is a utility for non-interactive download of files from HTTP
@@ -140,7 +140,12 @@
 /* Since we ignore these opts, we don't show them in --help */
 /* //usage:    "	[--no-cache] [--passive-ftp] [-t TRIES]" */
 /* //usage:    "	[-nv] [-nc] [-nH] [-np]" */
+//usage:	IF_PLATFORM_MINGW32(
+//usage:       "	"IF_FEATURE_TLS_SCHANNEL("[--no-check-certificate] ")"[-P DIR] [-U AGENT]"IF_FEATURE_WGET_TIMEOUT(" [-T SEC]")" URL..."
+//usage:	)
+//usage:	IF_PLATFORM_POSIX(
 //usage:       "	"IF_FEATURE_WGET_OPENSSL("[--no-check-certificate] ")"[-P DIR] [-U AGENT]"IF_FEATURE_WGET_TIMEOUT(" [-T SEC]")" URL..."
+//usage:	)
 //usage:	)
 //usage:	IF_NOT_FEATURE_WGET_LONG_OPTIONS(
 //usage:       "[-cqS] [-O FILE] [-o LOGFILE] [-Y on/off] [-P DIR] [-U AGENT]"IF_FEATURE_WGET_TIMEOUT(" [-T SEC]")" URL..."
@@ -153,6 +158,9 @@
 //usage:     "\n	--post-data STR	Send STR using POST method"
 //usage:     "\n	--post-file FILE	Send FILE using POST method"
 //usage:	IF_FEATURE_WGET_OPENSSL(
+//usage:     "\n	--no-check-certificate	Don't validate the server's certificate"
+//usage:	)
+//usage:	IF_FEATURE_TLS_SCHANNEL(
 //usage:     "\n	--no-check-certificate	Don't validate the server's certificate"
 //usage:	)
 //usage:	)
@@ -214,6 +222,9 @@ enum {
 	HDR_CONTENT_TYPE  = (1<<3),
 	HDR_AUTH          = (1<<4) * ENABLE_FEATURE_WGET_AUTHENTICATION,
 	HDR_PROXY_AUTH    = (1<<5) * ENABLE_FEATURE_WGET_AUTHENTICATION,
+# if ENABLE_PLATFORM_MINGW32
+	HDR_CONTENT_LENGTH = (1<<(4 + 2 * ENABLE_FEATURE_WGET_AUTHENTICATION)),
+# endif
 };
 static const char wget_user_headers[] ALIGN1 =
 	"Host:\0"
@@ -224,6 +235,9 @@ static const char wget_user_headers[] ALIGN1 =
 	"Authorization:\0"
 	"Proxy-Authorization:\0"
 # endif
+# if ENABLE_PLATFORM_MINGW32
+	"Content-Length:\0"
+# endif
 	;
 # define USR_HEADER_HOST         (G.user_headers & HDR_HOST)
 # define USR_HEADER_USER_AGENT   (G.user_headers & HDR_USER_AGENT)
@@ -231,6 +245,7 @@ static const char wget_user_headers[] ALIGN1 =
 # define USR_HEADER_CONTENT_TYPE (G.user_headers & HDR_CONTENT_TYPE)
 # define USR_HEADER_AUTH         (G.user_headers & HDR_AUTH)
 # define USR_HEADER_PROXY_AUTH   (G.user_headers & HDR_PROXY_AUTH)
+# define USR_HEADER_CONTENT_LENGTH (G.user_headers & HDR_CONTENT_LENGTH)
 #else /* No long options, no user-headers :( */
 # define USR_HEADER_HOST         0
 # define USR_HEADER_USER_AGENT   0
@@ -238,6 +253,7 @@ static const char wget_user_headers[] ALIGN1 =
 # define USR_HEADER_CONTENT_TYPE 0
 # define USR_HEADER_AUTH         0
 # define USR_HEADER_PROXY_AUTH   0
+# define USR_HEADER_CONTENT_LENGTH 0
 #endif
 
 /* Globals */
@@ -839,12 +855,18 @@ static void spawn_ssl_client(const char *host, int network_fd, int flags)
 
 	fflush_all();
 
-	cmd = xasprintf("%s --busybox ssl_client -h %p -n %s%s",
-					bb_busybox_exec_path,
+#  if !ENABLE_FEATURE_TLS_SCHANNEL
+	cmd = xasprintf("ssl_client -h %p -n %s%s",
 					(void *)_get_osfhandle(network_fd), servername,
 					flags & TLSLOOP_EXIT_ON_LOCAL_EOF ? " -e" : "");
+#  else
+	cmd = xasprintf("ssl_client -h %p -n %s%s%s",
+					(void *)_get_osfhandle(network_fd), servername,
+					flags & TLSLOOP_EXIT_ON_LOCAL_EOF ? " -e" : "",
+					flags & TLS_NO_CHECK_CERTIFICATE ? " -c" : "");
+#  endif
 
-	if ( (fd1=mingw_popen_fd(cmd, "b", -1, NULL)) == -1 ) {
+	if ((fd1=mingw_popen_fd("ssl_client", cmd, "b", -1, NULL)) == -1) {
 		bb_perror_msg_and_die("can't execute ssl_client");
 	}
 
@@ -1211,7 +1233,9 @@ static void download_one_url(const char *url)
 	/*G.content_len = 0; - redundant, got_clen = 0 is enough */
 	G.got_clen = 0;
 	G.chunked = 0;
-	if (use_proxy || target.protocol[0] != 'f' /*not ftp[s]*/) {
+	if (!ENABLE_FEATURE_WGET_FTP
+	 || use_proxy || target.protocol[0] != 'f' /*not ftp[s]*/
+	) {
 		/*
 		 *  HTTP session
 		 */
@@ -1246,7 +1270,12 @@ static void download_one_url(const char *url)
 		/* Only internal TLS support is configured */
 		sfp = open_socket(lsa);
 		if (server.protocol == P_HTTPS)
-			spawn_ssl_client(server.host, fileno(sfp), /*flags*/ 0);
+			spawn_ssl_client(server.host, fileno(sfp), /*flags*/
+#  if ENABLE_FEATURE_TLS_SCHANNEL
+				(option_mask32 & WGET_OPT_NO_CHECK_CERT) ?
+					TLS_NO_CHECK_CERTIFICATE :
+#  endif
+					0);
 #else
 		/* ssl (https) support is not configured */
 		sfp = open_socket(lsa);
@@ -1304,6 +1333,18 @@ static void download_one_url(const char *url)
 					"Content-Type: application/x-www-form-urlencoded\r\n"
 				);
 			}
+# if ENABLE_PLATFORM_MINGW32
+			if (!USR_HEADER_CONTENT_LENGTH)
+				SENDFMT(sfp, "Content-Length: %u\r\n",
+					(int)strlen(G.post_data)
+				);
+			SENDFMT(sfp,
+				"\r\n"
+				"%s",
+				G.post_data
+			);
+		} else
+# else
 			SENDFMT(sfp,
 				"Content-Length: %u\r\n"
 				"\r\n"
@@ -1311,6 +1352,7 @@ static void download_one_url(const char *url)
 				(int) strlen(G.post_data), G.post_data
 			);
 		} else
+# endif
 #endif
 		{
 			SENDFMT(sfp, "\r\n");
@@ -1480,14 +1522,15 @@ However, in real world it was observed that some web servers
 
 		/* For HTTP, data is pumped over the same connection */
 		dfp = sfp;
-	} else {
+	}
 #if ENABLE_FEATURE_WGET_FTP
+	else {
 		/*
 		 *  FTP session
 		 */
 		sfp = prepare_ftp_session(&dfp, &target, lsa);
-#endif
 	}
+#endif
 
 	free(lsa);
 
@@ -1635,7 +1678,7 @@ IF_DESKTOP(	"no-parent\0"        No_argument       "\xf0")
 			bit = 1;
 			words = wget_user_headers;
 			while (*words) {
-				if (strstr(hdr, words) == hdr) {
+				if (strcasestr(hdr, words) == hdr) {
 					G.user_headers |= bit;
 					break;
 				}

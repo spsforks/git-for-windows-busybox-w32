@@ -29,7 +29,7 @@ fi
 
 eval $(sed -e '/^#/d' -e '/^$/d' -e 's:^:export :' .config)
 
-PATH="`pwd`:$PATH" # for hush and recho/zecho/printenv
+PATH="`pwd`:$PATH" # for hush
 export PATH
 
 THIS_SH="`pwd`/hush"
@@ -69,6 +69,10 @@ do_test()
 		(
 			"$THIS_SH" "./$x" >"$name.xx" 2>&1
 			r=$?
+			# filter !FEATURE_SUID_CONFIG_QUIET message
+			sed -i \
+				-e "/^hush: using fallback suid method$/d" \
+				"$name.xx"
 			# filter C library differences
 			sed -i \
 				-e "/: invalid option /s:'::g" \
@@ -83,7 +87,7 @@ do_test()
 			*)  echo " fail ($?)"; tret=1;;
 		esac
 	done
-	exit ${tret}
+	exit $tret
 	)
 }
 
@@ -95,6 +99,9 @@ ret=0
 if [ $# -lt 1 ]; then
 	# All sub directories
 	modules=`ls -d hush-*`
+	# If you want to test hush against ash testsuite
+	# (have to copy ash_test dir to current dir first):
+	#modules=`ls -d hush-* ash_test/ash-*`
 
 	for module in $modules; do
 		do_test $module || ret=1
@@ -108,4 +115,4 @@ else
 	done
 fi
 
-exit ${ret}
+exit $ret

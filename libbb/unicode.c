@@ -69,8 +69,14 @@ void FAST_FUNC init_unicode(void)
 void FAST_FUNC reinit_unicode(const char *LANG)
 {
 	unicode_status = UNICODE_OFF;
+#if ENABLE_PLATFORM_MINGW32
+	/* enable unicode only when ACP is UTF8 and the env var is not 'C' */
+	if (GetACP() != CP_UTF8 || (LANG && LANG[0] == 'C' && LANG[1] == 0))
+		return;
+#else
 	if (!LANG || !(strstr(LANG, ".utf") || strstr(LANG, ".UTF")))
 		return;
+#endif
 	unicode_status = UNICODE_ON;
 }
 
@@ -270,7 +276,9 @@ int FAST_FUNC iswpunct(wint_t wc)
 	return (unsigned)wc <= 0x7f && ispunct(wc);
 }
 
+#define WCWIDTH_ALT (ENABLE_PLATFORM_MINGW32 && CONFIG_LAST_SUPPORTED_WCHAR >= 0x30000)
 
+# if !WCWIDTH_ALT || ENABLE_UNICODE_BIDI_SUPPORT
 # if CONFIG_LAST_SUPPORTED_WCHAR >= 0x300
 struct interval {
 	uint16_t first;
@@ -327,7 +335,9 @@ static int in_uint16_table(unsigned ucs, const uint16_t *table, unsigned max)
 	return 0;
 }
 # endif
+# endif /* !WCWIDTH_ALT || ENABLE_UNICODE_BIDI_SUPPORT */
 
+# if !WCWIDTH_ALT
 
 /*
  * This is an implementation of wcwidth() and wcswidth() (defined in
@@ -697,6 +707,9 @@ int FAST_FUNC wcwidth(unsigned ucs)
 # endif /* >= 0x300 */
 }
 
+# else /* WCWIDTH_ALT */
+# include "wcwidth_alt.c"  /* simpler and more up-to-date implementation */
+# endif
 
 # if ENABLE_UNICODE_BIDI_SUPPORT
 int FAST_FUNC unicode_bidi_isrtl(wint_t wc)
@@ -1015,6 +1028,15 @@ static char* FAST_FUNC unicode_conv_to_printable2(uni_stat_t *stats, const char 
 	unsigned uni_count;
 	unsigned uni_width;
 
+#if ENABLE_PLATFORM_MINGW32
+	static int acp;  /* =0 */
+	if (!acp)
+		acp = GetACP();
+/* without unicode ACP, >127 are also printable */
+#define isprint_no_unicode_mingw(c) (((c) >= ' ' && (c) < 0x7f) || \
+                                     (acp != CP_UTF8 && (c) > 0x7f))
+#endif
+
 	if (unicode_status != UNICODE_ON) {
 		char *d;
 		if (flags & UNI_FLAG_PAD) {
@@ -1027,7 +1049,11 @@ static char* FAST_FUNC unicode_conv_to_printable2(uni_stat_t *stats, const char 
 					while ((int)--width >= 0);
 					break;
 				}
+#if ENABLE_PLATFORM_MINGW32
+				*d++ = isprint_no_unicode_mingw(c) ? c : '?';
+#else
 				*d++ = (c >= ' ' && c < 0x7f) ? c : '?';
+#endif
 				src++;
 			}
 			*d = '\0';
@@ -1035,8 +1061,13 @@ static char* FAST_FUNC unicode_conv_to_printable2(uni_stat_t *stats, const char 
 			d = dst = xstrndup(src, width);
 			while (*d) {
 				unsigned char c = *d;
+#if ENABLE_PLATFORM_MINGW32
+				if (!isprint_no_unicode_mingw(c))
+					*d = '?';
+#else
 				if (c < ' ' || c >= 0x7f)
 					*d = '?';
+#endif
 				d++;
 			}
 		}

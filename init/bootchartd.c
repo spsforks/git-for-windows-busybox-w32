@@ -133,7 +133,7 @@ static void dump_file(FILE *fp, const char *filename)
 static int dump_procs(FILE *fp, int look_for_login_process)
 {
 	struct dirent *entry;
-	DIR *dir = opendir("/proc");
+	DIR *dir = xopendir("/proc");
 	int found_login_process = 0;
 
 	fputs(G.jiffy_line, fp);
@@ -434,8 +434,6 @@ int bootchartd_main(int argc UNUSED_PARAM, char **argv)
 	}
 
 	/* parent */
-
-	USE_FOR_NOMMU(argv[0][0] &= 0x7f); /* undo fork_or_rexec() damage */
 
 	if (DO_SIGNAL_SYNC) {
 		/* Wait for logger child to set handlers, then unpause it.

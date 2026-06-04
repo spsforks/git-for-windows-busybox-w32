@@ -13,14 +13,12 @@ typedef struct DIR DIR;
 #endif
 
 struct dirent {
-#if ENABLE_FEATURE_EXTRA_FILE_DATA
 	unsigned char d_type;
-#endif
 	char d_name[PATH_MAX_LONG];	// file name
 };
 
-DIR *opendir(const char *dirname);
-struct dirent *readdir(DIR *dir);
-int closedir(DIR *dir);
+DIR *opendir(const char *dirname) FAST_FUNC;
+struct dirent *readdir(DIR *dir) FAST_FUNC;
+int closedir(DIR *dir) FAST_FUNC;
 
 #endif /* DIRENT_H */

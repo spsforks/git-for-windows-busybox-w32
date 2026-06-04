@@ -77,13 +77,6 @@ static inline int *get_perrno(void) { return &errno; }
 static const char packed_scripts[] ALIGN1 = { PACKED_SCRIPTS };
 #endif
 
-#if defined(find_applet_by_name)
-# undef find_applet_by_name
-#endif
-#if defined(is_applet_preferred)
-# undef is_applet_preferred
-#endif
-
 /* "Do not compress usage text if uncompressed text is small
  *  and we don't include bunzip2 code for other reasons"
  *
@@ -108,6 +101,12 @@ static const char packed_scripts[] ALIGN1 = { PACKED_SCRIPTS };
 # define ENABLE_FEATURE_COMPRESS_USAGE 0
 #endif
 
+#if ENABLE_PLATFORM_MINGW32 && NUM_APPLETS > 1 && \
+		ENABLE_FEATURE_SH_STANDALONE
+static int find_applet_by_name_internal(const char *name);
+#else
+# define find_applet_by_name_internal(n) find_applet_by_name(n)
+#endif
 
 unsigned FAST_FUNC string_array_len(char **argv)
 {
@@ -146,17 +145,19 @@ static const char packed_usage[] ALIGN1 = { PACKED_USAGE };
 void FAST_FUNC bb_show_usage(void)
 {
 	if (ENABLE_SHOW_USAGE) {
+		ssize_t FAST_FUNC (*full_write_fn)(const char *) =
+				xfunc_error_retval ? full_write2_str : full_write1_str;
 #ifdef SINGLE_APPLET_STR
 		/* Imagine that this applet is "true". Dont link in printf! */
 		const char *usage_string = unpack_usage_messages();
 
 		if (usage_string) {
 			if (*usage_string == '\b') {
-				full_write2_str("No help available\n");
+				full_write_fn("No help available\n");
 			} else {
-				full_write2_str("Usage: "SINGLE_APPLET_STR" ");
-				full_write2_str(usage_string);
-				full_write2_str("\n");
+				full_write_fn("Usage: "SINGLE_APPLET_STR" ");
+				full_write_fn(usage_string);
+				full_write_fn("\n");
 			}
 			if (ENABLE_FEATURE_CLEAN_UP)
 				dealloc_usage_messages((char*)usage_string);
@@ -164,7 +165,7 @@ void FAST_FUNC bb_show_usage(void)
 #else
 		const char *p;
 		const char *usage_string = p = unpack_usage_messages();
-		int ap = find_applet_by_name(applet_name);
+		int ap = find_applet_by_name_internal(applet_name);
 
 		if (ap < 0 || usage_string == NULL)
 			xfunc_die();
@@ -172,23 +173,23 @@ void FAST_FUNC bb_show_usage(void)
 			while (*p++) continue;
 			ap--;
 		}
-		full_write2_str(bb_banner);
+		full_write_fn(bb_banner);
 #if ENABLE_PLATFORM_MINGW32
-		full_write2_str("\n");
+		full_write_fn("\n");
 #else
-		full_write2_str(" multi-call binary.\n"); /* common string */
+		full_write_fn(" multi-call binary.\n"); /* common string */
 #endif
 		if (*p == '\b')
-			full_write2_str("\nNo help available\n");
+			full_write_fn("\nNo help available\n");
 		else {
-			full_write2_str("\nUsage: ");
-			full_write2_str(applet_name);
+			full_write_fn("\nUsage: ");
+			full_write_fn(applet_name);
 			if (p[0]) {
 				if (p[0] != '\n')
-					full_write2_str(" ");
-				full_write2_str(p);
+					full_write_fn(" ");
+				full_write_fn(p);
 			}
-			full_write2_str("\n");
+			full_write_fn("\n");
 		}
 		if (ENABLE_FEATURE_CLEAN_UP)
 			dealloc_usage_messages((char*)usage_string);
@@ -197,7 +198,12 @@ void FAST_FUNC bb_show_usage(void)
 	xfunc_die();
 }
 
+#if ENABLE_PLATFORM_MINGW32 && NUM_APPLETS > 1 && \
+		ENABLE_FEATURE_SH_STANDALONE
+static int find_applet_by_name_internal(const char *name)
+#else
 int FAST_FUNC find_applet_by_name(const char *name)
+#endif
 {
 	unsigned i;
 	int j;
@@ -262,43 +268,81 @@ int FAST_FUNC find_applet_by_name(const char *name)
 	return -1;
 }
 
-#if ENABLE_PLATFORM_MINGW32 && NUM_APPLETS > 1 && \
-		(ENABLE_FEATURE_PREFER_APPLETS || ENABLE_FEATURE_SH_STANDALONE)
-int FAST_FUNC is_applet_preferred(const char *name)
+#if ENABLE_PLATFORM_MINGW32 && NUM_APPLETS > 1
+# if ENABLE_FEATURE_SH_STANDALONE
+int FAST_FUNC find_applet_by_name_for_sh(const char *name, const char *path)
 {
-	const char *var, *s;
+	int applet_no = find_applet_by_name_internal(name);
+	return applet_no >= 0 && prefer_applet(name, path) ? applet_no : -1;
+}
+
+int FAST_FUNC find_applet_by_name(const char *name)
+{
+	return find_applet_by_name_for_sh(name, NULL);
+}
+# endif
+
+# if ENABLE_FEATURE_SH_STANDALONE || ENABLE_FEATURE_PREFER_APPLETS
+static int external_exists(const char *name, const char *path)
+{
+	const char *path0, *path1, *ret;
+
+	path0 = path1 = xstrdup(path ?: getenv("PATH"));
+	ret = find_executable(name, &path1);
+	free((void *)ret);
+	free((void *)path0);
+	return ret != NULL;
+}
+
+static int prefer_applet_internal(const char *name, const char *path,
+										const char *override)
+{
+	const char *s, *sep;
 	size_t len;
 
-	var = getenv(BB_OVERRIDE_APPLETS);
-	if (var && *var) {
-		/* '-' overrides all applets */
-		if (var[0] == '-' && var[1] == '\0')
+	if (override && *override) {
+		/* '-' disables all applets */
+		if (override[0] == '-' && override[1] == '\0')
 			return FALSE;
 
-		/* Override applets from a space-separated list */
+		/* '+' each applet is overridden if an external command exists */
+		if (override[0] == '+' && override[1] == '\0')
+			return !external_exists(name, path);
+
+		/* Handle applets from a list separated by spaces, commas or
+		 * semicolons.  Applets before the first semicolon are disabled.
+		 * Applets after the first semicolon are overridden if a
+		 * corresponding external command exists. */
+		sep = strchr(override, ';');
 		len = strlen(name);
-		s = var - 1;
+		s = override - 1;
 		while (1) {
 			s = strstr(s + 1, name);
 			if (!s)
 				break;
 			/* neither "name.." nor "xxx,name.."? */
-			if (s != var && s[-1] != ' ')
+			if (s != override && !strchr(" ,;", s[-1]))
 				continue;
 			/* neither "..name" nor "..name,xxx"? */
-			if (s[len] != '\0' && s[len] != ' ')
+			if (s[len] != '\0' && !strchr(" ,;", s[len]))
 				continue;
-			return FALSE;
+			return (sep == NULL || s < sep) ?
+						FALSE : !external_exists(name, path);
 		}
 	}
 	return TRUE;
 }
 
-int FAST_FUNC find_preferred_applet_by_name(const char *name)
+int FAST_FUNC prefer_applet(const char *name, const char *path)
 {
-	int applet_no = find_applet_by_name(name);
-	return applet_no >= 0 && is_applet_preferred(name) ? applet_no : -1;
+	int ret;
+
+	ret = prefer_applet_internal(name, path, getenv(BB_OVERRIDE_APPLETS));
+	if (sizeof(CONFIG_OVERRIDE_APPLETS) > 1 && ret)
+		ret = prefer_applet_internal(name, path, CONFIG_OVERRIDE_APPLETS);
+	return ret;
 }
+# endif
 #endif
 
 
@@ -320,7 +364,6 @@ void lbb_prepare(const char *applet
 	/* Redundant for busybox (run_applet_and_exit covers that case)
 	 * but needed for "individual applet" mode */
 	if (argv[1]
-	 && !argv[2]
 	 && strcmp(argv[1], "--help") == 0
 	 && !is_prefixed_with(applet, "busybox")
 	) {
@@ -331,8 +374,10 @@ void lbb_prepare(const char *applet
 		 && !(ENABLE_TRUE && strcmp(applet_name, "true") == 0)
 		 && !(ENABLE_FALSE && strcmp(applet_name, "false") == 0)
 		 && !(ENABLE_ECHO && strcmp(applet_name, "echo") == 0)
-		)
+		) {
+			xfunc_error_retval = 0;
 			bb_show_usage();
+		}
 	}
 #endif
 }
@@ -354,6 +399,13 @@ bool re_execed;
 static int interp = 0;
 char bb_comm[COMM_LEN];
 char bb_command_line[128];
+
+# if ENABLE_FEATURE_SH_STANDALONE
+void FAST_FUNC set_interp(int i)
+{
+	interp = i;
+}
+# endif
 #endif
 
 
@@ -741,7 +793,7 @@ static void install_links(const char *busybox, int use_symbolic_links,
 	unsigned i;
 	int rc;
 #  if ENABLE_PLATFORM_MINGW32
-	const char *sd = NULL;
+	const char *sd = "";
 
 	if (custom_install_dir != NULL) {
 		bb_make_directory(custom_install_dir, 0755, FILEUTILS_RECUR);
@@ -749,7 +801,7 @@ static void install_links(const char *busybox, int use_symbolic_links,
 	else {
 		sd = get_system_drive();
 		for (i=1; i<ARRAY_SIZE(install_dir); ++i) {
-			fpc = xasprintf("%s%s", sd ?: "", install_dir[i]);
+			fpc = concat_path_file(sd, install_dir[i]);
 			bb_make_directory(fpc, 0755, FILEUTILS_RECUR);
 			free(fpc);
 		}
@@ -762,7 +814,7 @@ static void install_links(const char *busybox, int use_symbolic_links,
 
 	for (i = 0; i < ARRAY_SIZE(applet_main); i++) {
 #  if ENABLE_PLATFORM_MINGW32
-		fpc = xasprintf("%s%s/%s.exe", sd ?: "",
+		fpc = xasprintf("%s%s/%s.exe", sd,
 				custom_install_dir ?: install_dir[APPLET_INSTALL_LOC(i)],
 				appname);
 #  else
@@ -865,20 +917,24 @@ int busybox_main(int argc UNUSED_PARAM, char **argv)
  help:
 		output_width = get_terminal_width(2);
 
-		dup2(1, 2);
-		full_write2_str(bb_banner); /* reuse const string */
-#if ENABLE_PLATFORM_MINGW32
-		full_write2_str("\n");
-#else
-		full_write2_str(" multi-call binary.\n"); /* reuse */
-#endif
-#if defined(MINGW_VER)
+		full_write1_str(bb_banner); /* reuse const string */
+#  if ENABLE_PLATFORM_MINGW32
+		full_write1_str("\n(");
+#   if defined(MINGW_VER)
 		if (sizeof(MINGW_VER) > 5) {
-			full_write2_str(MINGW_VER "\n\n");
+			full_write1_str(MINGW_VER "; ");
 		}
+#   endif
+		full_write1_str(ENABLE_GLOBBING ? "glob" : "noglob");
+#   if ENABLE_FEATURE_UTF8_MANIFEST
+		full_write1_str("; Unicode");
+#   endif
+		full_write1_str(")\n\n");
+#  else
+		full_write1_str(" multi-call binary.\n"); /* reuse */
 #endif
-		full_write2_str(
-			"BusyBox is copyrighted by many authors between 1998-2022.\n"
+		full_write1_str(
+			"BusyBox is copyrighted by many authors between 1998-2026.\n"
 			"Licensed under GPLv2. See source distribution for detailed\n"
 			"copyright notices.\n"
 			"\n"
@@ -921,20 +977,20 @@ int busybox_main(int argc UNUSED_PARAM, char **argv)
 		while (*a) {
 			int len2 = strlen(a) + 2;
 			if (col >= (int)output_width - len2) {
-				full_write2_str(",\n");
+				full_write1_str(",\n");
 				col = 0;
 			}
 			if (col == 0) {
 				col = 6;
-				full_write2_str("\t");
+				full_write1_str("\t");
 			} else {
-				full_write2_str(", ");
+				full_write1_str(", ");
 			}
-			full_write2_str(a);
+			full_write1_str(a);
 			col += len2;
 			a += len2 - 1;
 		}
-		full_write2_str("\n");
+		full_write1_str("\n");
 		return 0;
 	}
 
@@ -954,11 +1010,10 @@ int busybox_main(int argc UNUSED_PARAM, char **argv)
 	if (is_prefixed_with(argv[1], "--list")) {
 		unsigned i = 0;
 		const char *a = applet_names;
-		dup2(1, 2);
 		while (*a) {
 #  if ENABLE_FEATURE_INSTALLER && !ENABLE_PLATFORM_MINGW32
 			if (argv[1][6]) /* --list-full? */
-				full_write2_str(install_dir[APPLET_INSTALL_LOC(i)] + 1);
+				full_write1_str(install_dir[APPLET_INSTALL_LOC(i)] + 1);
 #  elif ENABLE_PLATFORM_MINGW32 && (ENABLE_FEATURE_PREFER_APPLETS \
 		|| ENABLE_FEATURE_SH_STANDALONE \
 		|| ENABLE_FEATURE_SH_NOFORK)
@@ -975,12 +1030,12 @@ int busybox_main(int argc UNUSED_PARAM, char **argv)
 #   endif
 				else
 					str = "        ";
-				full_write2_str(str);
-				full_write2_str(install_dir[APPLET_INSTALL_LOC(i)] + 1);
+				full_write1_str(str);
+				full_write1_str(install_dir[APPLET_INSTALL_LOC(i)] + 1);
 			}
 #  endif
-			full_write2_str(a);
-			full_write2_str("\n");
+			full_write1_str(a);
+			full_write1_str("\n");
 			i++;
 			while (*a++ != '\0')
 				continue;
@@ -1068,27 +1123,39 @@ int busybox_main(int argc UNUSED_PARAM, char **argv)
 #endif
 
 	if (strcmp(argv[1], "--help") == 0) {
-		/* "busybox --help [<applet>]" */
+		/* "busybox --help [APPLET]" */
 		if (!argv[2]
 #  if ENABLE_FEATURE_SH_STANDALONE && ENABLE_FEATURE_TAB_COMPLETION
 		 || strcmp(argv[2], "busybox") == 0 /* prevent getting "No help available" */
 #  endif
 		)
 			goto help;
-		/* convert to "<applet> --help" */
+		/* convert to "APPLET --help" */
 		applet_name = argv[0] = argv[2];
 		argv[2] = NULL;
-		if (find_applet_by_name(applet_name) >= 0) {
+		if (find_applet_by_name_internal(applet_name) >= 0) {
 			/* Make "--help foo" exit with 0: */
 			xfunc_error_retval = 0;
 			bb_show_usage();
 		} /* else: unknown applet, fall through (causes "applet not found" later) */
-	} else {
-		/* "busybox <applet> arg1 arg2 ..." */
+	}
+#  if ENABLE_FEATURE_VERSION
+	else if (!argv[2] && strcmp(argv[1], "--version") == 0) {
+		full_write1_str(bb_banner); /* reuse const string */
+		full_write1_str("\n");
+		return 0;
+	}
+#  endif
+	else {
+		/* "busybox APPLET arg1 arg2 ..." */
 		argv++;
 		/* We support "busybox /a/path/to/applet args..." too. Allows for
 		 * "#!/bin/busybox"-style wrappers
 		 */
+#  if ENABLE_PLATFORM_MINGW32
+		if (interp)
+			--interp;
+#  endif
 		applet_name = bb_get_last_path_component_nostrip(argv[0]);
 	}
 	run_applet_and_exit(applet_name, argv);
@@ -1096,7 +1163,7 @@ int busybox_main(int argc UNUSED_PARAM, char **argv)
 # endif
 
 # if NUM_APPLETS > 0
-void FAST_FUNC show_usage_if_dash_dash_help(int applet_no, char **argv)
+void FAST_FUNC show_usage_if_dash_dash_help(int applet_no UNUSED_PARAM, char **argv)
 {
 	/* Special case. POSIX says "test --help"
 	 * should be no different from e.g. "test --foo".
@@ -1116,12 +1183,15 @@ void FAST_FUNC show_usage_if_dash_dash_help(int applet_no, char **argv)
 #  if defined APPLET_NO_echo
 	 && applet_no != APPLET_NO_echo
 #  endif
+#  if ENABLE_TEST1 || ENABLE_TEST2
+	 && argv[0][0] != '[' /* exclude [ --help ] and [[ --help ]] too */
+#  endif
 #  if ENABLE_PLATFORM_MINGW32 && defined APPLET_NO_busybox
 	 && applet_no != APPLET_NO_busybox
 #  endif
 	) {
-		if (argv[1] && !argv[2] && strcmp(argv[1], "--help") == 0) {
-			/* Make "foo --help" exit with 0: */
+		if (argv[1] && strcmp(argv[1], "--help") == 0) {
+			/* Make "foo --help [...]" exit with 0: */
 			xfunc_error_retval = 0;
 			bb_show_usage();
 		}
@@ -1184,7 +1254,7 @@ static NORETURN void run_applet_and_exit(const char *name, char **argv)
 #  if NUM_APPLETS > 0
 	/* find_applet_by_name() search is more expensive, so goes second */
 	{
-		int applet = find_applet_by_name(name);
+		int applet = find_applet_by_name_internal(name);
 		if (applet >= 0)
 			run_applet_no_and_exit(applet, name, argv);
 	}
@@ -1296,6 +1366,14 @@ int main(int argc UNUSED_PARAM, char **argv)
 	}
 #endif
 #if ENABLE_PLATFORM_MINGW32
+# if ENABLE_FEATURE_FAIL_IF_UTF8_MANIFEST_UNSUPPORTED
+	if (GetACP() != CP_UTF8) {
+		full_write2_str(bb_basename(argv[0]));
+		full_write2_str(": UTF8 manifest not supported\n");
+		return 1;
+	}
+# endif
+
 	/* detect if we're running an interpreted script */
 	if (argv[0][1] == ':' && argv[0][2] == '/') {
 		switch (argv[0][0]) {
@@ -1308,12 +1386,10 @@ int main(int argc UNUSED_PARAM, char **argv)
 			break;
 		}
 	}
-# if ENABLE_FEATURE_EURO
-	init_codepage();
-# endif
-	/* Ignore critical errors, such as calling GetVolumeInformation() on
-	 * a floppy or CDROM drive with no media. */
-	SetErrorMode(SEM_FAILCRITICALERRORS);
+
+	/* Have this process handle critical errors itself:  the default
+	 * system-generated error dialogs may be inconvenient. */
+	change_critical_error_dialogs(getenv(BB_CRITICAL_ERROR_DIALOGS));
 #endif
 
 #if defined(__MINGW64_VERSION_MAJOR)
@@ -1415,8 +1491,11 @@ int main(int argc UNUSED_PARAM, char **argv)
 # endif
 	lbb_prepare("busybox" IF_FEATURE_INDIVIDUAL(, argv));
 # if !ENABLE_BUSYBOX
-	if (argv[1] && is_prefixed_with(bb_basename(argv[0]), "busybox"))
+	if (argv[1] && argv[1][0] != '-' /* do not match "busybox --OPT" */
+	 && is_prefixed_with(bb_basename(argv[0]), "busybox")
+	) {
 		argv++;
+	}
 # endif
 	applet_name = argv[0];
 	if (applet_name[0] == '-')
@@ -1428,6 +1507,18 @@ int main(int argc UNUSED_PARAM, char **argv)
 		char *s = strrchr(argv[0], '.');
 		if (s)
 			*s = '\0';
+	}
+
+	if (windows_env()) {
+		/* remove single trailing separator from PATH */
+		for (char **envp = environ; envp && *envp; envp++) {
+			if (is_prefixed_with_case(*envp, "PATH=")) {
+				char *end = last_char_is(*envp, ';');
+				if (end && end[-1] != ';')
+					*end = '\0';
+				break;
+			}
+		}
 	}
 # endif
 	applet_name = bb_basename(applet_name);

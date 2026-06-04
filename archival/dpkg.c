@@ -1120,7 +1120,7 @@ static int check_deps(deb_file_t **deb_file, int deb_start /*, int dep_max_count
 			if (package_edge->type == EDGE_PRE_DEPENDS
 			 || package_edge->type == EDGE_DEPENDS
 			) {
-				int result=1;
+				int result = 1;
 				status_num = 0;
 
 				/* If we are inside an alternative then check
@@ -1694,7 +1694,7 @@ static void unpack_package(deb_file_t *deb_file)
 	accept_list = NULL;
 	i = 0;
 	while (i < ARRAY_SIZE(all_control_files)) {
-		char *c = xasprintf("./%s", all_control_files[i]);
+		char *c = concat_path_file(".", all_control_files[i]);
 		llist_add_to(&accept_list, c);
 		i++;
 	}

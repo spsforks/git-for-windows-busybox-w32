@@ -7,7 +7,7 @@
  * Licensed under GPLv2, see file LICENSE in this source tree.
  */
 //config:config SHOWKEY
-//config:	bool "showkey (4.7 kb)"
+//config:	bool "showkey (4.9 kb)"
 //config:	default y
 //config:	help
 //config:	Shows keys pressed.
@@ -70,8 +70,8 @@ int showkey_main(int argc UNUSED_PARAM, char **argv)
 
 	INIT_G();
 
-	// FIXME: aks are all mutually exclusive
-	getopt32(argv, "aks");
+	// a,k,s are all mutually exclusive
+	getopt32(argv, "^" "aks" "\0" "a--ks:k--as:s--ak");
 
 	// prepare for raw mode
 	xget1(&tio, &tio0);

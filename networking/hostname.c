@@ -10,13 +10,13 @@
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
 //config:config HOSTNAME
-//config:	bool "hostname (5.5 kb)"
+//config:	bool "hostname (5.8 kb)"
 //config:	default y
 //config:	help
 //config:	Show or set the system's host name.
 //config:
 //config:config DNSDOMAINNAME
-//config:	bool "dnsdomainname (3.6 kb)"
+//config:	bool "dnsdomainname (3.8 kb)"
 //config:	default y
 //config:	help
 //config:	Alias to "hostname -d".
@@ -25,8 +25,8 @@
 //applet:IF_DNSDOMAINNAME(APPLET_NOEXEC(dnsdomainname, hostname, BB_DIR_BIN, BB_SUID_DROP, dnsdomainname))
 //applet:IF_HOSTNAME(     APPLET_NOEXEC(hostname,      hostname, BB_DIR_BIN, BB_SUID_DROP, hostname     ))
 
-//kbuild: lib-$(CONFIG_HOSTNAME) += hostname.o
-//kbuild: lib-$(CONFIG_DNSDOMAINNAME) += hostname.o
+//kbuild:lib-$(CONFIG_HOSTNAME) += hostname.o
+//kbuild:lib-$(CONFIG_DNSDOMAINNAME) += hostname.o
 
 //usage:#define hostname_trivial_usage
 //usage:       "[-sidf] [HOSTNAME | -F FILE]"

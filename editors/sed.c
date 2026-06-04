@@ -102,7 +102,7 @@ enum {
 
 struct sed_FILE {
 	struct sed_FILE *next; /* Next (linked list, NULL terminated) */
-	const char *fname;
+	char *fname;
 	FILE *fp;
 };
 
@@ -194,9 +194,6 @@ static void sed_free_and_close_stuff(void)
 	while (sed_cmd) {
 		sed_cmd_t *sed_cmd_next = sed_cmd->next;
 
-		if (sed_cmd->sw_file)
-			fclose(sed_cmd->sw_file);
-
 		/* Used to free regexps, but now there is code
 		 * in get_address() which can reuse a regexp
 		 * for constructs as /regexp/cmd1;//cmd2
@@ -223,6 +220,18 @@ static void sed_free_and_close_stuff(void)
 
 	if (G.current_fp)
 		fclose(G.current_fp);
+
+	if (G.FILE_head) {
+		struct sed_FILE *cur = G.FILE_head;
+		do {
+			struct sed_FILE *p;
+			fclose(cur->fp);
+			free(cur->fname);
+			p = cur;
+			cur = cur->next;
+			free(p);
+		} while (cur);
+	}
 }
 #else
 void sed_free_and_close_stuff(void);
@@ -248,7 +257,12 @@ static FILE *sed_xfopen_w(const char *fname)
 
 static void cleanup_outname(void)
 {
-	if (G.outname) unlink(G.outname);
+	if (G.outname) {
+#if ENABLE_PLATFORM_MINGW32
+		fclose(G.nonstdout);
+#endif
+		unlink(G.outname);
+	}
 }
 
 /* strcpy, replacing "\from" with 'to'. If to is NUL, replacing "\any" with 'any' */
@@ -654,9 +668,8 @@ static void add_cmd(const char *cmdstr)
 
 	/* Append this line to any unfinished line from last time. */
 	if (G.add_cmd_line) {
-		char *tp = xasprintf("%s\n%s", G.add_cmd_line, cmdstr);
-		free(G.add_cmd_line);
-		cmdstr = G.add_cmd_line = tp;
+		cmdstr = xasprintf_inplace(G.add_cmd_line,
+			"%s\n%s", G.add_cmd_line, cmdstr);
 	}
 
 	/* If this line ends with unescaped backslash, request next line. */
@@ -1660,6 +1673,11 @@ int sed_main(int argc UNUSED_PARAM, char **argv)
 			fchown(nonstdoutfd, statbuf.st_uid, statbuf.st_gid);
 
 			process_files();
+			fflush(G.nonstdout);
+			if (ferror(G.nonstdout)) {
+				xfunc_error_retval = 4;  /* It's what gnu sed exits with... */
+				bb_simple_error_msg_and_die(bb_msg_write_error);
+			}
 			fclose(G.nonstdout);
 			G.nonstdout = stdout;
 

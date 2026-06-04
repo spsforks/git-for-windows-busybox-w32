@@ -15,7 +15,7 @@
  * http://www.opengroup.org/onlinepubs/007904975/utilities/xargs.html
  */
 //config:config XARGS
-//config:	bool "xargs (7.2 kb)"
+//config:	bool "xargs (7.6 kb)"
 //config:	default y
 //config:	help
 //config:	xargs is used to execute a specified command for
@@ -76,6 +76,8 @@
 
 #if ENABLE_PLATFORM_MINGW32
 #include <conio.h>
+#include "busybox.h"
+#include "NUM_APPLETS.h"
 #endif
 #include "libbb.h"
 #include "common_bufsiz.h"
@@ -114,12 +116,19 @@ struct globals {
 #endif
 	const char *eof_str;
 	int idx;
+#if !ENABLE_PLATFORM_MINGW32
+	int fd_tty;
+	int fd_stdin;
+#endif
 #if ENABLE_FEATURE_XARGS_SUPPORT_PARALLEL
 	int running_procs;
 	int max_procs;
-#if ENABLE_PLATFORM_MINGW32
+# if ENABLE_PLATFORM_MINGW32
 	HANDLE *procs;
+# endif
 #endif
+#if ENABLE_PLATFORM_MINGW32
+	pid_t pid;
 #endif
 	smalluint xargs_exitcode;
 #if ENABLE_FEATURE_XARGS_SUPPORT_QUOTES
@@ -147,6 +156,72 @@ struct globals {
 	IF_FEATURE_XARGS_SUPPORT_QUOTES(G.process_stdin__q = '\0';) \
 } while (0)
 
+/* Correct regardless of combination of CONFIG_xxx */
+enum {
+	OPTBIT_VERBOSE = 0,
+	OPTBIT_NO_EMPTY,
+	OPTBIT_UPTO_NUMBER,
+	OPTBIT_UPTO_SIZE,
+	OPTBIT_EOF_STRING,
+	OPTBIT_EOF_STRING1,
+	IF_NOT_PLATFORM_MINGW32(              OPTBIT_STDIN_TTY  ,)
+	IF_FEATURE_XARGS_SUPPORT_CONFIRMATION(OPTBIT_INTERACTIVE,)
+	IF_FEATURE_XARGS_SUPPORT_TERMOPT(     OPTBIT_TERMINATE  ,)
+	IF_FEATURE_XARGS_SUPPORT_ZERO_TERM(   OPTBIT_ZEROTERM   ,)
+	IF_FEATURE_XARGS_SUPPORT_REPL_STR(    OPTBIT_REPLSTR    ,)
+	IF_FEATURE_XARGS_SUPPORT_REPL_STR(    OPTBIT_REPLSTR1   ,)
+
+	OPT_VERBOSE     = 1 << OPTBIT_VERBOSE    ,
+	OPT_NO_EMPTY    = 1 << OPTBIT_NO_EMPTY   ,
+	OPT_UPTO_NUMBER = 1 << OPTBIT_UPTO_NUMBER,
+	OPT_UPTO_SIZE   = 1 << OPTBIT_UPTO_SIZE  ,
+	OPT_EOF_STRING  = 1 << OPTBIT_EOF_STRING , /* GNU: -e[<param>] */
+	OPT_EOF_STRING1 = 1 << OPTBIT_EOF_STRING1, /* SUS: -E<param> */
+	OPT_STDIN_TTY   = IF_NOT_PLATFORM_MINGW32(              (1 << OPTBIT_STDIN_TTY  )) + 0,
+	OPT_INTERACTIVE = IF_FEATURE_XARGS_SUPPORT_CONFIRMATION((1 << OPTBIT_INTERACTIVE)) + 0,
+	OPT_TERMINATE   = IF_FEATURE_XARGS_SUPPORT_TERMOPT(     (1 << OPTBIT_TERMINATE  )) + 0,
+	OPT_ZEROTERM    = IF_FEATURE_XARGS_SUPPORT_ZERO_TERM(   (1 << OPTBIT_ZEROTERM   )) + 0,
+	OPT_REPLSTR     = IF_FEATURE_XARGS_SUPPORT_REPL_STR(    (1 << OPTBIT_REPLSTR    )) + 0,
+	OPT_REPLSTR1    = IF_FEATURE_XARGS_SUPPORT_REPL_STR(    (1 << OPTBIT_REPLSTR1   )) + 0,
+};
+#define OPTION_STR "+trn:s:e::E:" \
+	IF_NOT_PLATFORM_MINGW32(              "o") \
+	IF_FEATURE_XARGS_SUPPORT_CONFIRMATION("p") \
+	IF_FEATURE_XARGS_SUPPORT_TERMOPT(     "x") \
+	IF_FEATURE_XARGS_SUPPORT_ZERO_TERM(   "0") \
+	IF_FEATURE_XARGS_SUPPORT_REPL_STR(    "I:i::") \
+	IF_FEATURE_XARGS_SUPPORT_PARALLEL(    "P:+") \
+	IF_FEATURE_XARGS_SUPPORT_ARGS_FILE(   "a:")
+
+
+#if ENABLE_PLATFORM_MINGW32
+static BOOL WINAPI ctrl_handler(DWORD dwCtrlType)
+{
+	if (dwCtrlType == CTRL_C_EVENT || dwCtrlType == CTRL_BREAK_EVENT) {
+# if ENABLE_FEATURE_XARGS_SUPPORT_PARALLEL
+		if (G.max_procs == 1)
+# endif
+		{
+			if (G.pid > 0)
+				kill(-G.pid, SIGTERM);
+		}
+# if ENABLE_FEATURE_XARGS_SUPPORT_PARALLEL
+		else {
+			int i;
+
+			for (i = 0; i < G.running_procs; ++i) {
+				pid_t pid = GetProcessId(G.procs[i]);
+				if (pid > 0)
+					kill(-pid, SIGTERM);
+			}
+		}
+# endif
+		exit(SIGINT << 24);
+		return TRUE;
+	}
+	return FALSE;
+}
+#endif
 
 #if ENABLE_FEATURE_XARGS_SUPPORT_PARALLEL && ENABLE_PLATFORM_MINGW32
 static int wait_for_slot(int *idx)
@@ -206,29 +281,16 @@ static int xargs_exec(void)
 {
 	int status;
 
+#if !ENABLE_PLATFORM_MINGW32
+	if (option_mask32 & OPT_STDIN_TTY)
+		xdup2(G.fd_tty, STDIN_FILENO);
+
 #if !ENABLE_FEATURE_XARGS_SUPPORT_PARALLEL
 	status = spawn_and_wait(G.args);
 #else
 	if (G.max_procs == 1) {
 		status = spawn_and_wait(G.args);
 	} else {
-#if ENABLE_PLATFORM_MINGW32
-		int idx;
-		status = !G.running_procs && !G.max_procs ? 0 : wait_for_slot(&idx);
-		if (G.max_procs) {
-			HANDLE p = (HANDLE)mingw_spawn_proc((const char **)G.args);
-			if (p < 0)
-				status = -1;
-			else
-				G.procs[idx] = p;
-		} else {
-			while (G.running_procs) {
-				int status2 = wait_for_slot(&idx);
-				if (status2 && !status)
-					status = status2;
-			}
-		}
-#else
 		pid_t pid;
 		int wstat;
  again:
@@ -269,8 +331,46 @@ static int xargs_exec(void)
 			/* final waitpid() loop: must be ECHILD "no more children" */
 			status = 0;
 		}
-#endif
 	}
+#endif
+#endif
+
+#if ENABLE_PLATFORM_MINGW32
+	/* Any change to the logic for NOFORK applets must be duplicated
+	 * in xargs_main() below. */
+# if ENABLE_FEATURE_XARGS_SUPPORT_PARALLEL
+	if (G.max_procs == 1) {
+# endif
+# if ENABLE_FEATURE_PREFER_APPLETS && (NUM_APPLETS > 1)
+		int applet = find_applet_by_name(G.args[0]);
+		if (applet >= 0 && APPLET_IS_NOFORK(applet)) {
+			status = run_nofork_applet(applet, G.args);
+		} else
+# endif
+		{
+			G.pid = spawn(G.args);
+			status = G.pid < 0 ? -1 : wait4pid(G.pid);
+		}
+# if ENABLE_FEATURE_XARGS_SUPPORT_PARALLEL
+	}
+	else {
+		int idx;
+		status = !G.running_procs && !G.max_procs ? 0 : wait_for_slot(&idx);
+		if (G.max_procs) {
+			HANDLE p = (HANDLE)mingw_spawn_proc((const char **)G.args);
+			if (p < 0)
+				status = -1;
+			else
+				G.procs[idx] = p;
+		} else {
+			while (G.running_procs) {
+				int status2 = wait_for_slot(&idx);
+				if (status2 && !status)
+					status = status2;
+			}
+		}
+	}
+# endif
 #endif
 	/* Manpage:
 	 * """xargs exits with the following status:
@@ -310,6 +410,10 @@ static int xargs_exec(void)
  ret:
 	if (status != 0)
 		G.xargs_exitcode = status;
+#if !ENABLE_PLATFORM_MINGW32
+	if (option_mask32 & OPT_STDIN_TTY)
+		xdup2(G.fd_stdin, STDIN_FILENO);
+#endif
 	return status;
 }
 
@@ -618,6 +722,20 @@ static int xargs_ask_confirmation(void)
 # define xargs_ask_confirmation() 1
 #endif
 
+#if ENABLE_PLATFORM_MINGW32
+// Maximum command length (less a few bytes)
+# define WIN32_MAX_CHARS (32750)
+
+static size_t quote_len(const char *arg)
+{
+	char *s = quote_arg(arg);
+	size_t len = strlen(s);
+
+	free(s);
+	return len;
+}
+#endif
+
 //usage:#define xargs_trivial_usage
 //usage:       "[OPTIONS] [PROG ARGS]"
 //usage:#define xargs_full_usage "\n\n"
@@ -627,6 +745,9 @@ static int xargs_ask_confirmation(void)
 //usage:	)
 //usage:	IF_FEATURE_XARGS_SUPPORT_ARGS_FILE(
 //usage:     "\n	-a FILE	Read from FILE instead of stdin"
+//usage:	)
+//usage:	IF_NOT_PLATFORM_MINGW32(
+//usage:     "\n	-o	Reopen stdin as /dev/tty"
 //usage:	)
 //usage:     "\n	-r	Don't run command if input is empty"
 //usage:     "\n	-t	Print the command on stderr before execution"
@@ -649,40 +770,6 @@ static int xargs_ask_confirmation(void)
 //usage:       "$ ls | xargs gzip\n"
 //usage:       "$ find . -name '*.c' -print | xargs rm\n"
 
-/* Correct regardless of combination of CONFIG_xxx */
-enum {
-	OPTBIT_VERBOSE = 0,
-	OPTBIT_NO_EMPTY,
-	OPTBIT_UPTO_NUMBER,
-	OPTBIT_UPTO_SIZE,
-	OPTBIT_EOF_STRING,
-	OPTBIT_EOF_STRING1,
-	IF_FEATURE_XARGS_SUPPORT_CONFIRMATION(OPTBIT_INTERACTIVE,)
-	IF_FEATURE_XARGS_SUPPORT_TERMOPT(     OPTBIT_TERMINATE  ,)
-	IF_FEATURE_XARGS_SUPPORT_ZERO_TERM(   OPTBIT_ZEROTERM   ,)
-	IF_FEATURE_XARGS_SUPPORT_REPL_STR(    OPTBIT_REPLSTR    ,)
-	IF_FEATURE_XARGS_SUPPORT_REPL_STR(    OPTBIT_REPLSTR1   ,)
-
-	OPT_VERBOSE     = 1 << OPTBIT_VERBOSE    ,
-	OPT_NO_EMPTY    = 1 << OPTBIT_NO_EMPTY   ,
-	OPT_UPTO_NUMBER = 1 << OPTBIT_UPTO_NUMBER,
-	OPT_UPTO_SIZE   = 1 << OPTBIT_UPTO_SIZE  ,
-	OPT_EOF_STRING  = 1 << OPTBIT_EOF_STRING , /* GNU: -e[<param>] */
-	OPT_EOF_STRING1 = 1 << OPTBIT_EOF_STRING1, /* SUS: -E<param> */
-	OPT_INTERACTIVE = IF_FEATURE_XARGS_SUPPORT_CONFIRMATION((1 << OPTBIT_INTERACTIVE)) + 0,
-	OPT_TERMINATE   = IF_FEATURE_XARGS_SUPPORT_TERMOPT(     (1 << OPTBIT_TERMINATE  )) + 0,
-	OPT_ZEROTERM    = IF_FEATURE_XARGS_SUPPORT_ZERO_TERM(   (1 << OPTBIT_ZEROTERM   )) + 0,
-	OPT_REPLSTR     = IF_FEATURE_XARGS_SUPPORT_REPL_STR(    (1 << OPTBIT_REPLSTR    )) + 0,
-	OPT_REPLSTR1    = IF_FEATURE_XARGS_SUPPORT_REPL_STR(    (1 << OPTBIT_REPLSTR1   )) + 0,
-};
-#define OPTION_STR "+trn:s:e::E:" \
-	IF_FEATURE_XARGS_SUPPORT_CONFIRMATION("p") \
-	IF_FEATURE_XARGS_SUPPORT_TERMOPT(     "x") \
-	IF_FEATURE_XARGS_SUPPORT_ZERO_TERM(   "0") \
-	IF_FEATURE_XARGS_SUPPORT_REPL_STR(    "I:i::") \
-	IF_FEATURE_XARGS_SUPPORT_PARALLEL(    "P:+") \
-	IF_FEATURE_XARGS_SUPPORT_ARGS_FILE(   "a:")
-
 int xargs_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
 int xargs_main(int argc UNUSED_PARAM, char **argv)
 {
@@ -694,6 +781,11 @@ int xargs_main(int argc UNUSED_PARAM, char **argv)
 	unsigned opt;
 	int n_max_chars;
 	int n_max_arg;
+#if ENABLE_PLATFORM_MINGW32
+	int delta = 0;
+	int quote = TRUE;
+	char *old_buf = NULL;
+#endif
 #if ENABLE_FEATURE_XARGS_SUPPORT_ZERO_TERM \
  || ENABLE_FEATURE_XARGS_SUPPORT_REPL_STR
 	char* FAST_FUNC (*read_args)(int, int, char*) = process_stdin;
@@ -704,6 +796,9 @@ int xargs_main(int argc UNUSED_PARAM, char **argv)
 
 	INIT_G();
 
+#if ENABLE_PLATFORM_MINGW32
+	SetConsoleCtrlHandler(ctrl_handler, TRUE);
+#endif
 	opt = getopt32long(argv, OPTION_STR,
 		"no-run-if-empty\0" No_argument "r",
 		&max_args, &max_chars, &G.eof_str, &G.eof_str
@@ -746,6 +841,24 @@ int xargs_main(int argc UNUSED_PARAM, char **argv)
 		//argc++;
 	}
 
+#if ENABLE_PLATFORM_MINGW32
+	/* On Windows the command line may be expanded by the need to quote
+	 * arguments, but not if the command is a NOFORK applet.  If the rules
+	 * to detect this situation change xargs_exec() above will also need
+	 * to be updated. */
+# if ENABLE_FEATURE_PREFER_APPLETS && (NUM_APPLETS > 1)
+#  if ENABLE_FEATURE_XARGS_SUPPORT_PARALLEL
+	if (G.max_procs == 1)
+#  endif
+	{
+		int applet = find_applet_by_name(argv[0]);
+		if (applet >= 0 && APPLET_IS_NOFORK(applet)) {
+			quote = FALSE;
+		}
+	}
+# endif
+#endif
+
 	/*
 	 * The Open Group Base Specifications Issue 6:
 	 * "The xargs utility shall limit the command line length such that
@@ -770,7 +883,12 @@ int xargs_main(int argc UNUSED_PARAM, char **argv)
 	{
 		size_t n_chars = 0;
 		for (i = 0; argv[i]; i++) {
-			n_chars += strlen(argv[i]) + 1;
+#if ENABLE_PLATFORM_MINGW32
+			if (quote)
+				n_chars += quote_len(argv[i]) + 1;
+			else
+#endif
+				n_chars += strlen(argv[i]) + 1;
 		}
 		n_max_chars -= n_chars;
 	}
@@ -817,13 +935,47 @@ int xargs_main(int argc UNUSED_PARAM, char **argv)
 			store_param(argv[i]);
 	}
 
+#if !ENABLE_PLATFORM_MINGW32
+	if (opt & OPT_STDIN_TTY) {
+		G.fd_tty = xopen(CURRENT_TTY, O_RDONLY);
+		close_on_exec_on(G.fd_tty);
+		G.fd_stdin = dup(STDIN_FILENO);
+		close_on_exec_on(G.fd_stdin);
+	}
+#endif
+
 	initial_idx = G.idx;
 	while (1) {
 		char *rem;
+#if ENABLE_PLATFORM_MINGW32
+		char **args;
+		char **tail = NULL;
+		char *saved_arg = NULL;
+		size_t n_chars;
+#endif
 
-		G.idx = initial_idx;
+		G.idx = initial_idx IF_PLATFORM_MINGW32(+ delta);
 		rem = read_args(n_max_chars, n_max_arg, buf);
 		store_param(NULL);
+
+#if ENABLE_PLATFORM_MINGW32
+		/* Check if quoting expands the command line.  If it does we
+		 * truncate args[] and preserve the tail for processing later. */
+		args = G.args;
+		if (quote) {
+ skip_read:
+			n_chars = 0;
+			for (i = initial_idx; args[i]; i++) {
+				n_chars += quote_len(args[i]) + 1;
+				if (n_chars > WIN32_MAX_CHARS) {
+					tail = args + i;
+					saved_arg = *tail;
+					*tail = NULL;
+					break;
+				}
+			}
+		}
+#endif
 
 		if (!G.args[initial_idx]) { /* not even one ARG was added? */
 			if (*rem != '\0')
@@ -835,17 +987,15 @@ int xargs_main(int argc UNUSED_PARAM, char **argv)
 
 		if (opt & (OPT_INTERACTIVE | OPT_VERBOSE)) {
 			const char *fmt = " %s" + 1;
+#if !ENABLE_PLATFORM_MINGW32
 			char **args = G.args;
+#endif
 			for (i = 0; args[i]; i++) {
 				fprintf(stderr, fmt, args[i]);
 				fmt = " %s";
 			}
 			if (!(opt & OPT_INTERACTIVE))
-#if !ENABLE_PLATFORM_MINGW32
 				bb_putchar_stderr('\n');
-#else
-				fprintf(stderr, "\n");
-#endif
 		}
 
 		if (!(opt & OPT_INTERACTIVE) || xargs_ask_confirmation()) {
@@ -853,6 +1003,33 @@ int xargs_main(int argc UNUSED_PARAM, char **argv)
 				break; /* G.xargs_exitcode is set by xargs_exec() */
 		}
 
+#if ENABLE_PLATFORM_MINGW32
+		delta = 0;
+		if (quote && tail) {
+			/* The command line was truncated.  Preload args[] with
+			 * the tail we saved earlier. */
+			*tail = saved_arg;
+			n_chars = 0;
+			for (i = 0; tail[i]; i++) {
+				args[initial_idx + i] = tail[i];
+				n_chars += quote_len(tail[i]) + 1;
+			}
+			args[initial_idx + i] = NULL;
+			delta = i;
+
+			/* The command line still overflows after quoting.
+			 * Truncate the new args[] and exec it. */
+			if (n_chars > WIN32_MAX_CHARS)
+				goto skip_read;
+
+			/* The first elements of args[] point to strings in the
+			 * current buf, so we need to preserve it.  Allocate a
+			 * new buf for future use. */
+			free(old_buf);
+			old_buf = buf;
+			buf = xzalloc(n_max_chars + 1);
+		}
+#endif
 		overlapping_strcpy(buf, rem);
 	} /* while */
 
@@ -860,6 +1037,9 @@ int xargs_main(int argc UNUSED_PARAM, char **argv)
 		free(G.args);
 		free(buf);
 	}
+#if ENABLE_FEATURE_CLEAN_UP && ENABLE_PLATFORM_MINGW32
+	free(old_buf);
+#endif
 
 #if ENABLE_FEATURE_XARGS_SUPPORT_PARALLEL
 	G.max_procs = 0;
@@ -878,7 +1058,7 @@ void bb_show_usage(void)
 {
 	fprintf(stderr, "Usage: %s [-p] [-r] [-t] -[x] [-n max_arg] [-s max_chars]\n",
 		applet_name);
-	exit(EXIT_FAILURE);
+	exit_FAILURE();
 }
 
 int main(int argc, char **argv)

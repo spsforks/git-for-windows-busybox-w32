@@ -119,6 +119,9 @@
 #include "libbb.h"
 #include "common_bufsiz.h"
 #include "bb_archive.h"
+#if ENABLE_PLATFORM_MINGW32
+# include "BB_VER.h"
+#endif
 /* FIXME: Stop using this non-standard feature */
 #ifndef FNM_LEADING_DIR
 # define FNM_LEADING_DIR 0
@@ -477,7 +480,7 @@ static int FAST_FUNC writeFileToTarball(struct recursive_state *state,
 	DBG("writeFileToTarball('%s')", fileName);
 
 	/* Strip leading '/' and such (must be before memorizing hardlink's name) */
-	header_name = strip_unsafe_prefix(fileName);
+	header_name = skip_unsafe_prefix(fileName);
 
 	if (header_name[0] == '\0')
 		return TRUE;
@@ -629,7 +632,7 @@ static void NOINLINE vfork_compressor(int tar_fd, const char *gzip)
 		execlp(gzip, gzip, "-f", (char *)0);
 
 		vfork_exec_errno = errno;
-		_exit(EXIT_FAILURE);
+		_exit_FAILURE();
 	}
 
 	/* parent */
@@ -1185,7 +1188,7 @@ int tar_main(int argc UNUSED_PARAM, char **argv)
 		 * on e.g. tarball with 1st file named "BZh5".
 		 */
 		) {
-			tar_handle->src_fd = open_zipped(tar_filename, /*fail_if_not_compressed:*/ 0);
+			tar_handle->src_fd = open_zipped(tar_filename, /*die_if_not_compressed:*/ 0);
 			if (tar_handle->src_fd < 0)
 				bb_perror_msg_and_die("can't open '%s'", tar_filename);
 		} else {

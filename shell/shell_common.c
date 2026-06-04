@@ -19,12 +19,27 @@
 #include "libbb.h"
 #include "shell_common.h"
 
-#if !ENABLE_PLATFORM_MINGW32
 const char defifsvar[] ALIGN1 = "IFS= \t\n";
-#else
-const char defifsvar[] ALIGN1 = "IFS= \t\n\r";
-#endif
 const char defoptindvar[] ALIGN1 = "OPTIND=1";
+
+/* Compare two strings up to the first '=' or '\0'. */
+int FAST_FUNC varcmp(const char *p, const char *q)
+{
+	int c, d;
+
+	while ((c = *p) == (d = *q)) {
+		if (c == '\0' || c == '=')
+			goto out;
+		p++;
+		q++;
+	}
+	if (c == '=')
+		c = '\0';
+	if (d == '=')
+		d = '\0';
+ out:
+	return c - d;
+}
 
 /* read builtin */
 
@@ -40,7 +55,7 @@ const char* FAST_FUNC
 shell_builtin_read(struct builtin_read_params *params)
 {
 	struct pollfd pfd[1];
-#define fd (pfd[0].fd) /* -u FD */
+#define fd (pfd->fd) /* -u FD */
 	unsigned err;
 	unsigned end_ms; /* -t TIMEOUT */
 	int nchars; /* -n NUM */
@@ -63,7 +78,7 @@ shell_builtin_read(struct builtin_read_params *params)
 	argv = params->argv;
 	pp = argv;
 	while (*pp) {
-		if (endofname(*pp)[0] != '\0') {
+		if (!*pp[0] || endofname(*pp)[0] != '\0') {
 			/* Mimic bash message */
 			bb_error_msg("read: '%s': bad variable name", *pp);
 			return (const char *)(uintptr_t)1;
@@ -129,19 +144,7 @@ shell_builtin_read(struct builtin_read_params *params)
 		 * bash seems to ignore -p PROMPT for this use case.
 		 */
 		int r;
-#if ENABLE_PLATFORM_MINGW32
-		HANDLE handle = (HANDLE)_get_osfhandle(fd);
-		DWORD filetype = FILE_TYPE_UNKNOWN;
-
-		if (handle != INVALID_HANDLE_VALUE)
-			filetype = GetFileType(handle);
-		/* poll uses WaitForSingleObject which can't handle disk files */
-		if (filetype == FILE_TYPE_DISK || filetype == FILE_TYPE_UNKNOWN)
-			return (const char *)(uintptr_t)(0);
-		if (isatty(fd))
-			return (const char *)(uintptr_t)(1);
-#endif
-		pfd[0].events = POLLIN;
+		pfd->events = POLLIN;
 		r = poll(pfd, 1, /*timeout:*/ 0);
 		/* Return 0 only if poll returns 1 ("one fd ready"), else return 1: */
 		return (const char *)(uintptr_t)(r <= 0);
@@ -206,22 +209,66 @@ shell_builtin_read(struct builtin_read_params *params)
 			 * 32-bit unix time wrapped (year 2038+).
 			 */
 			if (timeout <= 0) { /* already late? */
-				retval = (const char *)(uintptr_t)1;
-				goto ret;
+				retval = (const char *)(uintptr_t)2;
+				break;
 			}
 		}
 
-#if !ENABLE_PLATFORM_MINGW32
 		/* We must poll even if timeout is -1:
 		 * we want to be interrupted if signal arrives,
 		 * regardless of SA_RESTART-ness of that signal!
 		 */
 		errno = 0;
-		pfd[0].events = POLLIN;
-//TODO race with a signal arriving just before the poll!
-		if (poll(pfd, 1, timeout) <= 0) {
-			/* timed out, or EINTR */
+		pfd->events = POLLIN;
+
+#if ENABLE_PLATFORM_MINGW32
+		if (isatty(fd)) {
+			int64_t key;
+
+			key = windows_read_key(fd, NULL, timeout);
+			if (key == 0x03) {
+				/* ^C pressed */
+				retval = (const char *)(uintptr_t)3;
+				goto ret;
+			}
+			else if (key == -1) {
+				/* timeout */
+				retval = (const char *)(uintptr_t)2;
+				break;
+			} else if (key == 0x1a && bufpos == 0) {
+				/* ^Z at start of buffer */
+				retval = (const char *)(uintptr_t)1;
+				break;
+			} else if (key == '\b') {
+				if (bufpos > 0) {
+					--bufpos;
+					++nchars;
+					if (!(read_flags & BUILTIN_READ_SILENT)) {
+						console_write("\b \b", 3);
+					}
+				}
+				goto loop;
+			}
+			buffer[bufpos] = key == '\r' ? '\n' : key;
+			if (!(read_flags & BUILTIN_READ_SILENT)) {
+				/* echo input if not in silent mode */
+				console_write(buffer + bufpos, 1);
+			}
+		} else {
+			/* Don't poll if timeout is -1, it hurts performance.  The
+			 * caution above about interrupts isn't relevant on Windows
+			 * where Ctrl-C causes an event, not a signal.
+			 */
+			if (timeout >= 0)
+#endif
+		/* test bb_got_signal, then poll(), atomically wrt signals */
+		if (check_got_signal_and_poll(pfd, timeout) <= 0) {
+			/* timed out, or some error */
 			err = errno;
+			if (!err) { /* timed out */
+				retval = (const char *)(uintptr_t)2;
+				break;
+			}
 			retval = (const char *)(uintptr_t)1;
 			goto ret;
 		}
@@ -230,57 +277,42 @@ shell_builtin_read(struct builtin_read_params *params)
 			retval = (const char *)(uintptr_t)1;
 			break;
 		}
-#else
-		errno = 0;
-		if (isatty(fd)) {
-			int64_t key;
-
-			key = read_key(fd, NULL, timeout);
-			if (key == 0x03) {
-				/* ^C pressed */
-				retval = (const char *)(uintptr_t)2;
-				goto ret;
-			}
-			else if (key == -1 || (key == 0x1a && bufpos == 0)) {
-				/* timeout or ^Z at start of buffer */
-				retval = (const char *)(uintptr_t)1;
-				goto ret;
-			}
-			else if (key == '\b') {
-				if (bufpos > 0) {
-					--bufpos;
-					++nchars;
-					if (!(read_flags & BUILTIN_READ_SILENT)) {
-						printf("\b \b");
-					}
-				}
-				goto loop;
-			}
-			buffer[bufpos] = key == '\r' ? '\n' : key;
-			if (!(read_flags & BUILTIN_READ_SILENT)) {
-				/* echo input if not in silent mode */
-				putchar(buffer[bufpos]);
-			}
-		}
-		else {
-			if (read(fd, &buffer[bufpos], 1) != 1) {
-				err = errno;
-				retval = (const char *)(uintptr_t)1;
-				break;
-			}
+#if ENABLE_PLATFORM_MINGW32
 		}
 #endif
 
 		c = buffer[bufpos];
 #if ENABLE_PLATFORM_MINGW32
-		if (c == '\r')
-			continue;
+		if (c == '\n') {
+			if (backslash == 2 || (bufpos > 0 && buffer[bufpos - 1] == '\r')) {
+				/* We saw either:
+				 * - BS CR LF: remove CR, fall through to ignore escaped LF
+				 *   and exit BS context.
+				 * - CR LF not in BS context: replace CR with LF */
+				buffer[--bufpos] = c;
+				nchars += 1 + (backslash == 2);
+			}
+		} else if (backslash == 2) {
+			/* We saw BS CR ??, keep escaped CR, exit BS context,
+			 * process ?? */
+			backslash = 0;
+		}
 #endif
 		if (!(read_flags & BUILTIN_READ_RAW)) {
 			if (backslash) {
+#if ENABLE_PLATFORM_MINGW32
+				if (c == '\r') {
+					/* We have BS CR, keep CR for now, might see LF next */
+					backslash = 2;
+					goto put;
+				}
+#endif
 				backslash = 0;
 				if (c != '\n')
 					goto put;
+#if ENABLE_PLATFORM_MINGW32
+				++nchars;
+#endif
 				continue;
 			}
 			if (c == '\\') {
@@ -321,7 +353,7 @@ shell_builtin_read(struct builtin_read_params *params)
 		}
  put:
 		bufpos++;
-	} while (--nchars);
+	} while (IF_PLATFORM_MINGW32(backslash ||) --nchars);
 
 	if (argv[0]) {
 		/* Remove trailing space $IFS chars */

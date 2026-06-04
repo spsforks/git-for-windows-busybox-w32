@@ -36,7 +36,7 @@ static int hexval(unsigned c)
 	return -1;
 }
 
-int inet_pton(int af, const char *restrict s, void *restrict a0)
+int FAST_FUNC inet_pton(int af, const char *restrict s, void *restrict a0)
 {
 	uint16_t ip[8];
 	unsigned char *a = a0;
@@ -78,6 +78,7 @@ int inet_pton(int af, const char *restrict s, void *restrict a0)
 			if (s[j]!='.' || (i<6 && brk<0)) return 0;
 			need_v4=1;
 			i++;
+			ip[i&7]=0;
 			break;
 		}
 		s += j+1;

@@ -7,6 +7,7 @@
 #endif
 #include <ntdef.h>
 #include <psapi.h>
+#include <ntsecapi.h>
 
 #if defined(__MINGW64_VERSION_MAJOR)
 #if ENABLE_GLOBBING
@@ -427,14 +428,14 @@ int err_win_to_posix(void)
 #pragma GCC reset_options
 
 #undef strerror
-char *mingw_strerror(int errnum)
+char * FAST_FUNC mingw_strerror(int errnum)
 {
 	if (errnum == ELOOP)
 		return (char *)"Too many levels of symbolic links";
 	return strerror(errnum);
 }
 
-char *strsignal(int sig)
+char * FAST_FUNC strsignal(int sig)
 {
 	if (sig == SIGTERM)
 		return (char *)"Terminated";
@@ -451,15 +452,17 @@ static int rand_fd = -1;
  * device files.  Constants for these are defined as an enum
  * in mingw.h.
  */
-int get_dev_type(const char *filename)
+int FAST_FUNC get_dev_type(const char *filename)
 {
 	if (filename && is_prefixed_with(filename, "/dev/"))
-		return index_in_strings("null\0zero\0urandom\0", filename+5);
+		return index_in_strings(
+				"stdin\0stdout\0stderr\0null\0tty\0zero\0urandom\0",
+				filename+5);
 
 	return NOT_DEVICE;
 }
 
-static int get_dev_typeW(const wchar_t *wpath)
+static int FAST_FUNC get_dev_typeW(const wchar_t *wpath)
 {
 	if (wpath && !wcsncmp(wpath, L"/dev/", 5))
 		return !wcscmp(wpath + 5, L"null") ||
@@ -469,7 +472,7 @@ static int get_dev_typeW(const wchar_t *wpath)
 	return NOT_DEVICE;
 }
 
-void update_special_fd(int dev, int fd)
+void FAST_FUNC update_special_fd(int dev, int fd)
 {
 	if (dev == DEV_ZERO)
 		zero_fd = fd;
@@ -513,29 +516,38 @@ static int mingw_is_directory(const wchar_t *wpath);
 int mingw_open (const char *filename, int oflags, ...)
 {
 	va_list args;
-	unsigned mode;
+	int mode = 0666;
 	int fd;
+	// Special case: /dev/urandom and /dev/zero for internal use
 	int special = (oflags & O_SPECIAL);
 	int dev = get_dev_type(filename);
 	const wchar_t *wpath;
 
-	/* /dev/null is always allowed, others only if O_SPECIAL is set */
-	if (dev == DEV_NULL || (special && dev != NOT_DEVICE)) {
-		wpath = L"NUL";
-		oflags = O_RDWR;
-	}
-	else if ((fd=get_dev_fd(filename)) >= 0) {
+	if (dev == DEV_NULL)
+		wpath = L"nul";
+	else if (dev == DEV_TTY)
+		wpath = L"con";
+	else if (dev == DEV_STDIN || dev == DEV_STDOUT || dev == DEV_STDERR)
+		return dup(dev);
+	else if (dev == DEV_URANDOM || dev == DEV_ZERO) {
+		if (special || (oflags & _O_WRONLY)) {
+			wpath = L"nul";
+		} else {
+			return mingw_popen_special(filename);
+		}
+	} else if ((fd=get_dev_fd(filename)) >= 0)
 		return fd;
-	}
 	else if (filename) {
 		wpath = mingw_pathconv(filename);
 	}
 	else
 		return -1;
 
-	va_start(args, oflags);
-	mode = va_arg(args, int);
-	va_end(args);
+	if ((oflags & O_CREAT)) {
+		va_start(args, oflags);
+		mode = va_arg(args, int);
+		va_end(args);
+	}
 
 	fd = _wopen(wpath, oflags&~O_SPECIAL, mode);
 	if (fd >= 0) {
@@ -548,7 +560,7 @@ int mingw_open (const char *filename, int oflags, ...)
 	return fd;
 }
 
-int mingw_xopen(const char *pathname, int flags)
+int FAST_FUNC mingw_xopen(const char *pathname, int flags)
 {
 	int ret;
 
@@ -570,15 +582,26 @@ ssize_t FAST_FUNC mingw_open_read_close(const char *fn, void *buf, size_t size)
 }
 
 #undef fopen
-FILE *mingw_fopen (const char *filename, const char *otype)
+FILE * FAST_FUNC mingw_fopen (const char *filename, const char *otype)
 {
 	const wchar_t *wpath;
 	wchar_t wotype[16];
 	int fd;
+	FILE *stream;
+	int dev = get_dev_type(filename);
 
-	if (get_dev_type(filename) == DEV_NULL)
-		wpath = L"NUL";
-	else if ((fd=get_dev_fd(filename)) >= 0)
+	if (dev == DEV_NULL)
+		wpath = L"nul";
+	else if (dev == DEV_TTY)
+		wpath = L"con";
+	else if (dev == DEV_STDIN || dev == DEV_STDOUT || dev == DEV_STDERR) {
+		if ((fd = dup(dev)) < 0)
+			return NULL;
+		return fdopen(fd, otype);
+	} else if (dev == DEV_URANDOM || dev == DEV_ZERO) {
+		fd = mingw_popen_special(filename);
+		return fd == -1 ? NULL : fdopen(fd, "rb");
+	} else if ((fd=get_dev_fd(filename)) >= 0)
 		return fdopen(fd, otype);
 	else if (filename)
 		wpath = mingw_pathconv(filename);
@@ -587,11 +610,31 @@ FILE *mingw_fopen (const char *filename, const char *otype)
 
 	if (!MultiByteToWideChar(CP_UTF8, 0, otype, -1, wotype, 16))
 		return NULL;
-	return _wfopen(wpath, wotype);
+	stream = _wfopen(wpath, wotype);
+	if (stream == NULL && errno == EACCES && strcmp(otype, "r") == 0 &&
+			mingw_is_directory(wpath))
+		errno = EISDIR;
+	return stream;
+}
+
+static ssize_t get_random_bytes(void *buf, ssize_t count)
+{
+	// 32-bit mingw-w64 didn't support RtlGenRandom until 7.0.0
+#if !defined(__MINGW64_VERSION_MAJOR) || \
+				(__MINGW64_VERSION_MAJOR < 7 && !defined(__MINGW64__))
+	DECLARE_PROC_ADDR(BOOLEAN, SystemFunction036, PVOID, ULONG);
+
+	if (!INIT_PROC_ADDR(advapi32.dll, SystemFunction036))
+		return -1;
+# define RtlGenRandom SystemFunction036
+#endif
+	if (count < 0 || !RtlGenRandom(buf, count))
+		return -1;
+	return count;
 }
 
 #undef read
-ssize_t mingw_read(int fd, void *buf, size_t count)
+ssize_t FAST_FUNC mingw_read(int fd, void *buf, size_t count)
 {
 	if (fd == zero_fd) {
 		memset(buf, 0, count);
@@ -604,7 +647,7 @@ ssize_t mingw_read(int fd, void *buf, size_t count)
 }
 
 #undef close
-int mingw_close(int fd)
+int FAST_FUNC mingw_close(int fd)
 {
 	if (fd == zero_fd) {
 		zero_fd = -1;
@@ -616,7 +659,7 @@ int mingw_close(int fd)
 }
 
 #undef dup2
-int mingw_dup2 (int fd, int fdto)
+int FAST_FUNC mingw_dup2(int fd, int fdto)
 {
 	int ret = dup2(fd, fdto);
 	return ret != -1 ? fdto : -1;
@@ -648,7 +691,7 @@ static inline mode_t file_attr_to_st_mode(DWORD attr)
 {
 	mode_t fMode = S_IRUSR|S_IRGRP|S_IROTH;
 	if (attr & FILE_ATTRIBUTE_DIRECTORY)
-		fMode |= S_IFDIR|S_IXUSR|S_IXGRP|S_IXOTH;
+		fMode |= (S_IFDIR|S_IRWXU|S_IRWXG|S_IRWXO) & ~(current_umask & 0022);
 	else if (attr & FILE_ATTRIBUTE_DEVICE)
 		fMode |= S_IFCHR|S_IWUSR|S_IWGRP|S_IWOTH;
 	else
@@ -660,9 +703,15 @@ static inline mode_t file_attr_to_st_mode(DWORD attr)
 
 static int get_file_attr(const wchar_t *wpath, WIN32_FILE_ATTRIBUTE_DATA *fdata)
 {
+	int want_dir;
+	int dev = get_dev_typeW(wpath);
 	size_t len;
 
-	if (get_dev_typeW(wpath) != NOT_DEVICE || get_dev_fdW(wpath) >= 0) {
+#if !ENABLE_DD
+	// /dev/urandom and /dev/zero aren't supported without dd
+	if (dev != DEV_URANDOM && dev != DEV_ZERO)
+#endif
+	if (dev != NOT_DEVICE || get_dev_fdW(wpath) >= 0) {
 		/* Fake attributes for special devices */
 		FILETIME epoch = {0xd53e8000, 0x019db1de};	// Unix epoch as FILETIME
 		fdata->dwFileAttributes = FILE_ATTRIBUTE_DEVICE;
@@ -672,7 +721,11 @@ static int get_file_attr(const wchar_t *wpath, WIN32_FILE_ATTRIBUTE_DATA *fdata)
 		return 0;
 	}
 
+	len = wcslen(wpath);
+	want_dir = len > 0 && wisdirsep(wpath[len - 1]);
 	if (GetFileAttributesExW(wpath, GetFileExInfoStandard, fdata)) {
+		if (!(fdata->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && want_dir)
+			return ENOTDIR;
 		fdata->dwFileAttributes &= ~FILE_ATTRIBUTE_DEVICE;
 		return 0;
 	}
@@ -705,8 +758,7 @@ static int get_file_attr(const wchar_t *wpath, WIN32_FILE_ATTRIBUTE_DATA *fdata)
 	case ERROR_NOT_ENOUGH_MEMORY:
 		return ENOMEM;
 	case ERROR_INVALID_NAME:
-		len = wcslen(wpath);
-		if (len > 1 && (wpath[len-1] == '/' || wpath[len-1] == '\\'))
+		if (want_dir)
 			return ENOTDIR;
 	default:
 		return ENOENT;
@@ -714,7 +766,7 @@ static int get_file_attr(const wchar_t *wpath, WIN32_FILE_ATTRIBUTE_DATA *fdata)
 }
 
 #undef umask
-mode_t mingw_umask(mode_t new_mode)
+mode_t FAST_FUNC mingw_umask(mode_t new_mode)
 {
 	mode_t tmp_mode;
 
@@ -735,7 +787,10 @@ mode_t mingw_umask(mode_t new_mode)
  */
 static int has_exec_format(const char *name)
 {
-	int n, sig;
+	HANDLE fh;
+	int fd = -1;
+	ssize_t n;
+	int sig;
 	unsigned int offset;
 	unsigned char buf[1024];
 
@@ -743,8 +798,22 @@ static int has_exec_format(const char *name)
 	if (is_suffixed_with_case(name, ".dll"))
 		return 0;
 
-	n = open_read_close(name, buf, sizeof(buf));
-	if (n < 4)	/* at least '#!/x' and not error */
+	/* Open file and try to avoid updating access time */
+	fh = CreateFileA(name, GENERIC_READ | FILE_WRITE_ATTRIBUTES,
+						FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+	if (fh != INVALID_HANDLE_VALUE) {
+		FILETIME last_access = { 0xffffffff, 0xffffffff };
+
+		SetFileTime(fh, NULL, &last_access, NULL);
+		fd = _open_osfhandle((intptr_t)fh, O_RDONLY);
+	}
+
+	if (fd < 0)
+		n = open_read_close(name, buf, sizeof(buf));
+	else
+		n = read_close(fd, buf, sizeof(buf));
+
+	if (n < 4) /* Need at least a few bytes and no error */
 		return 0;
 
 	/* shell script */
@@ -757,21 +826,33 @@ static int has_exec_format(const char *name)
 	 * the magic from the file command.
 	 */
 	if (buf[0] == 'M' && buf[1] == 'Z') {
-		offset = (buf[0x19] << 8) + buf[0x18];
-		if (offset > 0x3f) {
-			offset = (buf[0x3f] << 24) + (buf[0x3e] << 16) +
-						(buf[0x3d] << 8) + buf[0x3c];
-			if (offset < sizeof(buf)-100) {
-				if (memcmp(buf+offset, "PE\0\0", 4) == 0) {
-					sig = (buf[offset+25] << 8) + buf[offset+24];
-					if (sig == 0x10b || sig == 0x20b) {
-						sig = (buf[offset+23] << 8) + buf[offset+22];
-						if ((sig & 0x2000) != 0) {
-							/* DLL */
-							return 0;
+/* Convert four unsigned bytes to an unsigned int (little-endian) */
+#define LE4(b, o) (((unsigned)b[o+3] << 24) + (b[o+2] << 16) + \
+						(b[o+1] << 8) + b[o])
+
+		/* Actually Portable Executable */
+		/* See ape/ape.S at https://github.com/jart/cosmopolitan */
+		const unsigned char *qFpD = (unsigned char *)"qFpD";
+		if (n > 6 && LE4(buf, 2) == LE4(qFpD, 0))
+			return 1;
+
+		if (n > 0x3f) {
+			offset = (buf[0x19] << 8) + buf[0x18];
+			if (offset > 0x3f) {
+				offset = LE4(buf, 0x3c);
+				if (offset < sizeof(buf)-100) {
+					if (memcmp(buf+offset, "PE\0\0", 4) == 0) {
+						sig = (buf[offset+25] << 8) + buf[offset+24];
+						if (sig == 0x10b || sig == 0x20b) {
+							sig = (buf[offset+23] << 8) + buf[offset+22];
+							if ((sig & 0x2000) != 0) {
+								/* DLL */
+								return 0;
+							}
+							sig = buf[offset+92];
+							return (sig == 1 || sig == 2 || sig == 3
+										|| sig == 7);
 						}
-						sig = buf[offset+92];
-						return (sig == 1 || sig == 2 || sig == 3 || sig == 7);
 					}
 				}
 			}
@@ -782,11 +863,13 @@ static int has_exec_format(const char *name)
 }
 
 #if ENABLE_FEATURE_EXTRA_FILE_DATA
-static uid_t file_owner(HANDLE fh)
+static uid_t file_owner(HANDLE fh, struct mingw_stat *buf)
 {
 	PSID pSidOwner;
+	PACL pDACL;
 	PSECURITY_DESCRIPTOR pSD;
 	static PTOKEN_USER user = NULL;
+	static HANDLE impersonate = INVALID_HANDLE_VALUE;
 	static int initialised = 0;
 	uid_t uid = 0;
 	DWORD *ptr;
@@ -807,13 +890,16 @@ static uid_t file_owner(HANDLE fh)
 		DWORD ret = 0;
 
 		initialised = 1;
-		if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+		if (OpenProcessToken(GetCurrentProcess(),
+				TOKEN_IMPERSONATE | TOKEN_QUERY | TOKEN_DUPLICATE |
+					STANDARD_RIGHTS_READ, &token)) {
 			GetTokenInformation(token, TokenUser, NULL, 0, &ret);
 			if (ret <= 0 || (user=malloc(ret)) == NULL ||
 					!GetTokenInformation(token, TokenUser, user, ret, &ret)) {
 				free(user);
 				user = NULL;
 			}
+			DuplicateToken(token, SecurityImpersonation, &impersonate);
 			CloseHandle(token);
 		}
 	}
@@ -822,8 +908,10 @@ static uid_t file_owner(HANDLE fh)
 		return DEFAULT_UID;
 
 	/* get SID of file's owner */
-	if (GetSecurityInfo(fh, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
-			&pSidOwner, NULL, NULL, NULL, &pSD) != ERROR_SUCCESS)
+	if (GetSecurityInfo(fh, SE_FILE_OBJECT,
+			OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION |
+				DACL_SECURITY_INFORMATION,
+			&pSidOwner, NULL, &pDACL, NULL, &pSD) != ERROR_SUCCESS)
 		return 0;
 
 	if (EqualSid(pSidOwner, user->User.Sid)) {
@@ -836,33 +924,29 @@ static uid_t file_owner(HANDLE fh)
 		if (ptr[6] >= 500 && ptr[6] < DEFAULT_UID)
 			uid = (uid_t)ptr[6];
 	}
-	LocalFree(pSD);
-	return uid;
 
-#if 0
-	/* this is how it would be done properly using the API */
-	{
-		PSID_IDENTIFIER_AUTHORITY auth;
-		unsigned char *count;
-		PDWORD subauth;
-		unsigned char nt_auth[] = {
-				0x00, 0x00, 0x00, 0x00, 0x00, 0x05
+	if (uid != DEFAULT_UID && impersonate != INVALID_HANDLE_VALUE &&
+				getuid() != 0) {
+		static GENERIC_MAPPING mapping = {
+			FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+			FILE_GENERIC_EXECUTE, FILE_ALL_ACCESS
 		};
+		PRIVILEGE_SET privileges;
+		DWORD grantedAccess;
+		DWORD privilegesLength = sizeof(privileges);
+		DWORD genericAccessRights = MAXIMUM_ALLOWED;
+		BOOL result;
 
-		if (IsValidSid(pSidOwner) ) {
-			auth = GetSidIdentifierAuthority(pSidOwner);
-			count = GetSidSubAuthorityCount(pSidOwner);
-			subauth = GetSidSubAuthority(pSidOwner, 0);
-			if (memcmp(auth, nt_auth, sizeof(nt_auth)) == 0 &&
-					*count == 5 && *subauth == 21) {
-				subauth = GetSidSubAuthority(pSidOwner, 4);
-				if (*subauth >= 500 && *subauth < DEFAULT_UID)
-					uid = (uid_t)*subauth;
+		if (AccessCheck(pSD, impersonate, genericAccessRights,
+				&mapping, &privileges, &privilegesLength,
+				&grantedAccess, &result)) {
+			if (result && (grantedAccess & 0x1200af) == 0x1200af) {
+				buf->st_mode |= (buf->st_mode & S_IRWXU) >> 6;
 			}
 		}
-		return uid;
 	}
-#endif
+	LocalFree(pSD);
+	return uid;
 }
 #endif
 
@@ -877,6 +961,7 @@ static DWORD get_symlink_data(DWORD attr, wchar_t *wpath,
 				switch (fbuf->dwReserved0) {
 				case IO_REPARSE_TAG_SYMLINK:
 				case IO_REPARSE_TAG_MOUNT_POINT:
+				case IO_REPARSE_TAG_APPEXECLINK:
 					return fbuf->dwReserved0;
 				}
 			}
@@ -904,13 +989,25 @@ static int mingw_is_directory(const wchar_t *wpath)
 }
 
 #if ENABLE_FEATURE_EXTRA_FILE_DATA
-static int count_subdirs(const char *pathname)
+/*
+ * By default we don't count subdirectories.  Counting can be enabled
+ * in specific cases by calling 'count_subdirs(NULL)' before making
+ * any calls to stat(2) or lstat(2) that require accurate values of
+ * st_nlink for directories.
+ */
+int FAST_FUNC count_subdirs(const char *pathname)
 {
 	int count = 0;
-	DIR *dirp = opendir(pathname);
+	DIR *dirp;
 	struct dirent *dp;
+	static int do_count = FALSE;
 
-	if (dirp) {
+	if (pathname == NULL) {
+		do_count = TRUE;
+		return 0;
+	}
+
+	if (do_count && (dirp = opendir(pathname))) {
 		while ((dp = readdir(dirp)) != NULL) {
 			if (dp->d_type == DT_DIR)
 				count++;
@@ -921,6 +1018,10 @@ static int count_subdirs(const char *pathname)
 	}
 	return count;
 }
+#endif
+
+#ifndef FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+# define FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS 0x00400000
 #endif
 
 /* If follow is true then act like stat() and report on the link
@@ -934,12 +1035,7 @@ static int do_lstat(int follow, const char *file_name, struct mingw_stat *buf)
 	WIN32_FIND_DATAW findbuf;
 	DWORD low, high;
 	off64_t size;
-	ssize_t len;
-#if ENABLE_FEATURE_EXTRA_FILE_DATA
-	DWORD flags;
-	BY_HANDLE_FILE_INFORMATION hdata;
-	HANDLE fh;
-#endif
+	char *lname = NULL;
 
 	if (!strcasecmp("nul", file_name) || !strcmp("/dev/null", file_name)) {
 		memset(buf, 0, sizeof(*buf));
@@ -962,24 +1058,27 @@ static int do_lstat(int follow, const char *file_name, struct mingw_stat *buf)
 		buf->st_uid = DEFAULT_UID;
 		buf->st_gid = DEFAULT_GID;
 		buf->st_dev = buf->st_rdev = 0;
-		buf->st_tag =
-			get_symlink_data(fdata.dwFileAttributes, wpath, &findbuf);
+		buf->st_attr = fdata.dwFileAttributes;
+		buf->st_tag = get_symlink_data(buf->st_attr, wpath, &findbuf);
 
 		if (buf->st_tag) {
+			char *content;
+
 			if (follow) {
 				/* The file size and times are wrong when Windows follows
-				 * a symlink.  Use the canonicalized path instead. */
-				err = errno;
-				file_name = auto_string(xmalloc_realpath(file_name));
+				 * a symlink.  Use the symlink target instead. */
+				file_name = lname = xmalloc_follow_symlinks(file_name);
+				if (!lname)
+					return -1;
 				wpath = mingw_pathconv(file_name);
 				continue;
 			}
 
 			/* Get the contents of a symlink, not its target. */
 			buf->st_mode = S_IFLNK|S_IRWXU|S_IRWXG|S_IRWXO;
-			buf->st_attr = fdata.dwFileAttributes;
-			len = readlink(file_name, NULL, 0);
-			buf->st_size = len == -1 ? 0 : len;
+			content = xmalloc_readlink(file_name);
+			buf->st_size = content ? strlen(content) : 0;
+			free(content);
 			buf->st_atim = filetime_to_timespec(&(findbuf.ftLastAccessTime));
 			buf->st_mtim = filetime_to_timespec(&(findbuf.ftLastWriteTime));
 			buf->st_ctim = filetime_to_timespec(&(findbuf.ftCreationTime));
@@ -987,10 +1086,10 @@ static int do_lstat(int follow, const char *file_name, struct mingw_stat *buf)
 		else {
 			/* The file is not a symlink. */
 			buf->st_mode = file_attr_to_st_mode(fdata.dwFileAttributes);
-			buf->st_attr = fdata.dwFileAttributes;
 			if (S_ISREG(buf->st_mode) &&
-					!(buf->st_attr & FILE_ATTRIBUTE_DEVICE) &&
-					(has_exe_suffix(file_name) || has_exec_format(file_name)))
+					(has_exe_suffix(file_name) ||
+					(!(buf->st_attr & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS) &&
+						has_exec_format(file_name))))
 				buf->st_mode |= S_IXUSR|S_IXGRP|S_IXOTH;
 			buf->st_size = fdata.nFileSizeLow |
 				(((off64_t)fdata.nFileSizeHigh)<<32);
@@ -1001,39 +1100,43 @@ static int do_lstat(int follow, const char *file_name, struct mingw_stat *buf)
 		buf->st_nlink = (buf->st_attr & FILE_ATTRIBUTE_DIRECTORY) ? 2 : 1;
 
 #if ENABLE_FEATURE_EXTRA_FILE_DATA
-		flags = FILE_FLAG_BACKUP_SEMANTICS;
-		if (S_ISLNK(buf->st_mode))
-			flags |= FILE_FLAG_OPEN_REPARSE_POINT;
-		fh = CreateFile(file_name, READ_CONTROL, 0, NULL,
-							OPEN_EXISTING, flags, NULL);
-		if (fh != INVALID_HANDLE_VALUE) {
-			if (GetFileInformationByHandle(fh, &hdata)) {
-				buf->st_dev = hdata.dwVolumeSerialNumber;
-				buf->st_ino = hdata.nFileIndexLow |
-						(((ino_t)hdata.nFileIndexHigh)<<32);
-				buf->st_nlink = (buf->st_attr & FILE_ATTRIBUTE_DIRECTORY) ?
-							count_subdirs(file_name) :
-							hdata.nNumberOfLinks;
+		if (!(buf->st_attr &
+			(FILE_ATTRIBUTE_DEVICE | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS))) {
+			DWORD flags;
+			HANDLE fh;
+			BY_HANDLE_FILE_INFORMATION hdata;
+
+			flags = FILE_FLAG_BACKUP_SEMANTICS;
+			if (S_ISLNK(buf->st_mode))
+				flags |= FILE_FLAG_OPEN_REPARSE_POINT;
+			fh = CreateFile(file_name, READ_CONTROL, 0, NULL,
+								OPEN_EXISTING, flags, NULL);
+			if (fh != INVALID_HANDLE_VALUE) {
+				if (GetFileInformationByHandle(fh, &hdata)) {
+					buf->st_dev = hdata.dwVolumeSerialNumber;
+					buf->st_ino = hdata.nFileIndexLow |
+							(((ino_t)hdata.nFileIndexHigh)<<32);
+					buf->st_nlink = (buf->st_attr & FILE_ATTRIBUTE_DIRECTORY) ?
+								count_subdirs(file_name) :
+								hdata.nNumberOfLinks;
+				}
+				buf->st_uid = buf->st_gid = file_owner(fh, buf);
+				CloseHandle(fh);
+			} else {
+				buf->st_uid = buf->st_gid = 0;
+				buf->st_mode &= ~S_IRWXO;
 			}
-			buf->st_uid = buf->st_gid = file_owner(fh);
-			CloseHandle(fh);
-		}
-		else {
-			buf->st_uid = 0;
-			buf->st_gid = 0;
-			if (!(buf->st_attr & FILE_ATTRIBUTE_DEVICE))
-				buf->st_mode &= ~(S_IROTH|S_IWOTH|S_IXOTH);
 		}
 #endif
 
-		/* Get actual size of compressed/sparse files */
-		low = GetCompressedFileSizeW(wpath, &high);
-		if ((low == INVALID_FILE_SIZE && GetLastError() != NO_ERROR) ||
-				(buf->st_attr & FILE_ATTRIBUTE_DIRECTORY)) {
-			size = buf->st_size;
-		}
-		else {
-			size = low | (((off64_t)high)<<32);
+		/* Get actual size of compressed/sparse files.  Only regular
+		 * files need to be considered. */
+		size = buf->st_size;
+		if (S_ISREG(buf->st_mode)) {
+			low = GetCompressedFileSizeW(wpath, &high);
+			if (low != INVALID_FILE_SIZE || GetLastError() == NO_ERROR) {
+				size = low | (((off64_t)high)<<32);
+			}
 		}
 
 		/*
@@ -1044,6 +1147,7 @@ static int do_lstat(int follow, const char *file_name, struct mingw_stat *buf)
 		buf->st_blocks = ((size+4095)>>12)<<3;
 		return 0;
 	}
+	free(lname);
 	errno = err;
 	return -1;
 }
@@ -1061,7 +1165,7 @@ int mingw_stat(const char *file_name, struct mingw_stat *buf)
 #undef st_atime
 #undef st_mtime
 #undef st_ctime
-int mingw_fstat(int fd, struct mingw_stat *buf)
+int FAST_FUNC mingw_fstat(int fd, struct mingw_stat *buf)
 {
 	HANDLE fh = (HANDLE)_get_osfhandle(fd);
 	BY_HANDLE_FILE_INFORMATION fdata;
@@ -1168,7 +1272,7 @@ static int hutimens(HANDLE fh, const struct timespec times[2])
 	return 0;
 }
 
-int futimens(int fd, const struct timespec times[2])
+int FAST_FUNC futimens(int fd, const struct timespec times[2])
 {
 	HANDLE fh;
 
@@ -1181,8 +1285,8 @@ int futimens(int fd, const struct timespec times[2])
 	return hutimens(fh, times);
 }
 
-int utimensat(int fd, const char *path, const struct timespec times[2],
-                int flags)
+int FAST_FUNC utimensat(int fd, const char *path,
+					const struct timespec times[2], int flags)
 {
 	int rc = -1;
 	HANDLE fh;
@@ -1213,7 +1317,7 @@ int utimensat(int fd, const char *path, const struct timespec times[2],
 	return rc;
 }
 
-int utimes(const char *file_name, const struct timeval tv[2])
+int FAST_FUNC utimes(const char *file_name, const struct timeval tv[2])
 {
 	struct timespec ts[2];
 
@@ -1237,7 +1341,7 @@ unsigned int sleep (unsigned int seconds)
 	return 0;
 }
 
-int nanosleep(const struct timespec *req, struct timespec *rem)
+int FAST_FUNC nanosleep(const struct timespec *req, struct timespec *rem)
 {
 	if (req->tv_nsec < 0 || 1000000000 <= req->tv_nsec) {
 		errno = EINVAL;
@@ -1260,7 +1364,7 @@ int nanosleep(const struct timespec *req, struct timespec *rem)
  * template and signals an error by making it an empty string.
  */
 #undef mktemp
-char *mingw_mktemp(char *template)
+char * FAST_FUNC mingw_mktemp(char *template)
 {
 	if ( mktemp(template) == NULL ) {
 		template[0] = '\0';
@@ -1289,7 +1393,7 @@ int gettimeofday(struct timeval *tv, void *tz UNUSED_PARAM)
 	return 0;
 }
 
-int clock_gettime(clockid_t clockid, struct timespec *tp)
+int FAST_FUNC clock_gettime(clockid_t clockid, struct timespec *tp)
 {
 	FILETIME ft;
 
@@ -1302,29 +1406,67 @@ int clock_gettime(clockid_t clockid, struct timespec *tp)
 	return 0;
 }
 
-int pipe(int filedes[2])
+int FAST_FUNC clock_settime(clockid_t clockid, const struct timespec *tp)
+{
+	SYSTEMTIME st;
+	FILETIME ft;
+
+	if (clockid != CLOCK_REALTIME) {
+		errno = ENOSYS;
+		return -1;
+	}
+
+	timespec_to_filetime(*tp, &ft);
+	if (FileTimeToSystemTime(&ft, &st) == 0) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (SetSystemTime(&st) == 0) {
+		errno = EPERM;
+		return -1;
+	}
+	return 0;
+}
+
+int FAST_FUNC pipe(int filedes[2])
 {
 	if (_pipe(filedes, PIPE_BUF, 0) < 0)
 		return -1;
 	return 0;
 }
 
-struct tm *gmtime_r(const time_t *timep, struct tm *result)
+struct tm * FAST_FUNC gmtime_r(const time_t *timep, struct tm *result)
 {
 	/* gmtime() in MSVCRT.DLL is thread-safe, but not reentrant */
 	memcpy(result, gmtime(timep), sizeof(struct tm));
 	return result;
 }
 
-struct tm *localtime_r(const time_t *timep, struct tm *result)
+#undef localtime
+#if !defined(_WIN64) && __MINGW64_VERSION_MAJOR >= 10
+# define localtime(t) _localtime64(t)
+#endif
+struct tm * FAST_FUNC mingw_localtime(const time_t *timep)
+{
+	struct tm *tm = localtime(timep);
+	time_t epoch = 0;
+
+	if (tm == NULL) {
+		tm = localtime(&epoch);
+	}
+	return tm;
+}
+
+struct tm * FAST_FUNC localtime_r(const time_t *timep, struct tm *result)
 {
 	/* localtime() in MSVCRT.DLL is thread-safe, but not reentrant */
-	memcpy(result, localtime(timep), sizeof(struct tm));
+	memcpy(result, mingw_localtime(timep), sizeof(struct tm));
 	return result;
 }
 
 #undef getcwd
-char *mingw_getcwd(char *pointer, int len)
+char * FAST_FUNC mingw_getcwd(char *pointer, int len)
 {
 	char *ret = getcwd(pointer, len);
 	if (!ret)
@@ -1340,7 +1482,7 @@ char *mingw_getcwd(char *pointer, int len)
 }
 
 #undef rename
-int mingw_rename(const char *pold, const char *pnew)
+int FAST_FUNC mingw_rename(const char *pold, const char *pnew)
 {
 	DWORD attrs;
 	wchar_t *wold = mingw_pathconv(pold);
@@ -1404,21 +1546,8 @@ static char *gethomedir(void)
 	return buf;
 }
 
-static char *getsysdir(void)
-{
-	static char *buf = NULL;
-	char dir[PATH_MAX];
-
-	if (!buf) {
-		buf = xzalloc(PATH_MAX);
-		GetSystemDirectory(dir, PATH_MAX);
-		realpath(dir, buf);
-	}
-	return buf;
-}
-
 #define NAME_LEN 100
-static char *get_user_name(void)
+char *get_user_name(void)
 {
 	static char *user_name = NULL;
 	char *s;
@@ -1445,26 +1574,52 @@ static char *get_user_name(void)
 	return user_name;
 }
 
-int getuid(void)
+/*
+ * When 'drop' drops privileges TokenIsElevated is still TRUE.
+ * Find out if we're really privileged by checking if the group
+ * BUILTIN\Administrators is enabled.
+ */
+int
+elevation_state(void)
 {
-	int ret = DEFAULT_UID;
+	int elevated = FALSE;
+	int enabled = TRUE;
 	HANDLE h;
+#if ENABLE_DROP || ENABLE_CDROP || ENABLE_PDROP
+	BOOL admin_enabled = TRUE;
+	unsigned char admin[16] = {
+		0x01, 0x02, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x05,
+		0x20, 0x00, 0x00, 0x00,
+		0x20, 0x02, 0x00, 0x00
+	};
+#endif
 
 	if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &h)) {
-		TOKEN_ELEVATION elevation;
-		DWORD size = sizeof(TOKEN_ELEVATION);
+		TOKEN_ELEVATION elevation = { 0 };
+		DWORD size;
 
 		if (GetTokenInformation(h, TokenElevation, &elevation,
-					sizeof(elevation), &size)) {
-			if (elevation.TokenIsElevated)
-				ret = 0;
-		}
+					sizeof(elevation), &size))
+			elevated = elevation.TokenIsElevated != 0;
 		CloseHandle(h);
 	}
-	return ret;
+
+#if ENABLE_DROP || ENABLE_CDROP || ENABLE_PDROP
+	if (CheckTokenMembership(NULL, (PSID)admin, &admin_enabled))
+		enabled = admin_enabled != 0;
+#endif
+
+	return elevated | (enabled << 1);
 }
 
-struct passwd *getpwnam(const char *name)
+int getuid(void)
+{
+	return elevation_state() == (ELEVATED_PRIVILEGE | ADMIN_ENABLED) ?
+				0 : DEFAULT_UID;
+}
+
+struct passwd * FAST_FUNC getpwnam(const char *name)
 {
 	const char *myname;
 
@@ -1479,21 +1634,16 @@ struct passwd *getpwnam(const char *name)
 	return NULL;
 }
 
-struct passwd *getpwuid(uid_t uid)
+struct passwd * FAST_FUNC getpwuid(uid_t uid)
 {
 	static struct passwd p;
 
-	if (uid == 0) {
+	if (uid == 0)
 		p.pw_name = (char *)"root";
-		p.pw_dir = getsysdir();
-	}
-	else if (uid == DEFAULT_UID && (p.pw_name=get_user_name()) != NULL) {
-		p.pw_dir = gethomedir();
-	}
-	else {
+	else if (uid != DEFAULT_UID || (p.pw_name=get_user_name()) == NULL)
 		return NULL;
-	}
 
+	p.pw_dir = gethomedir();
 	p.pw_passwd = (char *)"";
 	p.pw_gecos = p.pw_name;
 	p.pw_shell = NULL;
@@ -1503,7 +1653,7 @@ struct passwd *getpwuid(uid_t uid)
 	return &p;
 }
 
-struct group *getgrgid(gid_t gid)
+struct group * FAST_FUNC getgrgid(gid_t gid)
 {
 	static char *members[2] = { NULL, NULL };
 	static struct group g;
@@ -1522,7 +1672,8 @@ struct group *getgrgid(gid_t gid)
 	return &g;
 }
 
-int getgrouplist(const char *user UNUSED_PARAM, gid_t group,
+#if 0
+int FAST_FUNC getgrouplist(const char *user UNUSED_PARAM, gid_t group,
 					gid_t *groups, int *ngroups)
 {
 	if ( *ngroups == 0 ) {
@@ -1535,7 +1686,7 @@ int getgrouplist(const char *user UNUSED_PARAM, gid_t group,
 	return 1;
 }
 
-int getgroups(int n, gid_t *groups)
+int FAST_FUNC getgroups(int n, gid_t *groups)
 {
 	if ( n == 0 ) {
 		return 1;
@@ -1544,8 +1695,9 @@ int getgroups(int n, gid_t *groups)
 	groups[0] = getgid();
 	return 1;
 }
+#endif
 
-int getlogin_r(char *buf, size_t len)
+int FAST_FUNC getlogin_r(char *buf, size_t len)
 {
 	char *name;
 
@@ -1562,7 +1714,7 @@ int getlogin_r(char *buf, size_t len)
 	return 0;
 }
 
-long sysconf(int name)
+long FAST_FUNC sysconf(int name)
 {
 	if ( name == _SC_CLK_TCK ) {
 		return TICKS_PER_SECOND;
@@ -1571,9 +1723,15 @@ long sysconf(int name)
 	return -1;
 }
 
-clock_t times(struct tms *buf)
+clock_t FAST_FUNC times(struct tms *buf)
 {
+	procps_status_t ps;
+
 	memset(buf, 0, sizeof(*buf));
+	memset(&ps, 0, sizeof(ps));
+	get_process_times(getpid(), &ps);
+	buf->tms_stime = ps.stime;
+	buf->tms_utime = ps.utime;
 	return 0;
 }
 
@@ -1585,6 +1743,7 @@ int link(const char *oldpath, const char *newpath)
 						LPSECURITY_ATTRIBUTES);
 
 	if (!INIT_PROC_ADDR(kernel32.dll, CreateHardLinkW)) {
+		errno = ENOSYS;
 		return -1;
 	}
 	if (!CreateHardLinkW(wnewpath, woldpath, NULL)) {
@@ -1632,6 +1791,7 @@ int symlink(const char *target, const char *linkpath)
 	char *relative = NULL;
 
 	if (!INIT_PROC_ADDR(kernel32.dll, CreateSymbolicLinkW)) {
+		errno = ENOSYS;
 		return -1;
 	}
 
@@ -1747,7 +1907,7 @@ static REPARSE_DATA_BUFFER *make_junction_data_buffer(char *rpath)
 	return rptr;
 }
 
-int create_junction(const char *oldpath, const char *newpath)
+int FAST_FUNC create_junction(const char *oldpath, const char *newpath)
 {
 	char rpath[PATH_MAX];
 	struct stat statbuf;
@@ -1944,6 +2104,9 @@ static wchar_t *resolve_symlinks(wchar_t *wpath)
 				FILE_FLAG_BACKUP_SEMANTICS, NULL);
 	if (h != INVALID_HANDLE_VALUE) {
 		if (!INIT_PROC_ADDR(kernel32.dll, GetFinalPathNameByHandleW)) {
+			if (resolve)
+				wcscpy(wpath, resolve);
+			ptr = wpath;
 			goto end;
 		}
 
@@ -1952,6 +2115,11 @@ static wchar_t *resolve_symlinks(wchar_t *wpath)
 							FILE_NAME_NORMALIZED|VOLUME_NAME_DOS);
 		if (status != 0 && status < MAX_PATH) {
 			ptr = normalize_ntpath(wpath);
+			goto end;
+		} else if (err_win_to_posix() == ENOSYS) {
+			if (resolve)
+				wcscpy(wpath, resolve);
+			ptr = wpath;
 			goto end;
 		}
 	}
@@ -1972,7 +2140,7 @@ static wchar_t *resolve_symlinks(wchar_t *wpath)
  * - resolve_symlinks checks that the file exists (by opening it) and
  *   resolves symlinks by calling GetFinalPathNameByHandleA.
  */
-static wchar_t *wrealpath(wchar_t *wpath, wchar_t *resolved_path)
+static wchar_t * FAST_FUNC wrealpath(wchar_t *wpath, wchar_t *resolved_path)
 {
 	wchar_t *real_path;
 
@@ -2025,11 +2193,30 @@ char *realpath(const char *path, char *resolved_path)
 	return resolved_path;
 }
 
-/* Non-standard feature:  if buf is NULL just return the length. */
-ssize_t readlink(const char *pathname, char *buf, size_t bufsiz)
+/*
+ * This is the stucture required for reparse points with the tag
+ * IO_REPARSE_TAG_APPEXECLINK.  The Buffer member contains four
+ * NUL-terminated, concatentated strings:
+ *
+ *  package id, entry point, executable path and application type.
+ *
+ *  https://www.tiraniddo.dev/2019/09/overview-of-windows-execution-aliases.html
+ */
+typedef struct {
+	DWORD	ReparseTag;
+	USHORT	ReparseDataLength;
+	USHORT	Reserved;
+	ULONG	Version;
+	WCHAR	Buffer[1];
+} APPEXECLINK_BUFFER;
+
+#define SRPB rptr->SymbolicLinkReparseBuffer
+char * FAST_FUNC xmalloc_readlink(const char *pathname)
 {
 	wchar_t *wpath = mingw_pathconv(pathname);
 	HANDLE h;
+	char *buf;
+	int bufsiz;
 
 	h = CreateFileW(wpath, 0, 0, NULL, OPEN_EXISTING,
 				FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS, NULL);
@@ -2037,9 +2224,11 @@ ssize_t readlink(const char *pathname, char *buf, size_t bufsiz)
 		DWORD nbytes;
 		BYTE rbuf[MAXIMUM_REPARSE_DATA_BUFFER_SIZE];
 		PREPARSE_DATA_BUFFER rptr = (PREPARSE_DATA_BUFFER)rbuf;
+		APPEXECLINK_BUFFER *aptr = (APPEXECLINK_BUFFER *)rptr;
 		BOOL status;
 		size_t len;
-		WCHAR *name = NULL;
+		WCHAR *name = NULL, *str[4], *s;
+		int i;
 
 		status = DeviceIoControl(h, FSCTL_GET_REPARSE_POINT, NULL, 0,
 					rptr, sizeof(rbuf), &nbytes, NULL);
@@ -2051,29 +2240,42 @@ ssize_t readlink(const char *pathname, char *buf, size_t bufsiz)
 		} else if (status && rptr->ReparseTag == IO_REPARSE_TAG_MOUNT_POINT) {
 			len = MRPB.SubstituteNameLength/sizeof(WCHAR);
 			name = MRPB.PathBuffer + MRPB.SubstituteNameOffset/sizeof(WCHAR);
+		} else if (status && rptr->ReparseTag == IO_REPARSE_TAG_APPEXECLINK) {
+			// We only need the executable path but we determine all of
+			// the strings as a sanity check.
+			i = 0;
+			s = aptr->Buffer;
+			do {
+				str[i] = s;
+				while (*s++)
+					;
+			} while (++i < 4);
+
+			if (s - aptr->Buffer < MAXIMUM_REPARSE_DATA_BUFFER_SIZE) {
+				len = wcslen(str[2]);
+				name = str[2];
+			}
 		}
 
 		if (name) {
-			if (buf == NULL)
-				return len;
 			name[len] = 0;
 			name = normalize_ntpath(name);
-			len = wcslen(name);
-			if (len > bufsiz)
-				len = bufsiz;
-			len = WideCharToMultiByte(CP_ACP, 0, name, len, buf, bufsiz, 0, 0);
-			if (len) {
-				int i;
-
-				for (i = 0; i < len; i++)
-					if (buf[i] == '\\')
-						buf[i] = '/';
-				return len;
+			bufsiz = WideCharToMultiByte(CP_ACP, 0, name, -1, NULL, 0, 0, 0);
+			if (bufsiz) {
+				buf = xmalloc(bufsiz);
+				if (WideCharToMultiByte(CP_ACP, 0, name, -1, buf, bufsiz, 0, 0)) {
+					int j;
+					for (j = 0; j < bufsiz - 1; j++)
+						if (buf[j] == '\\')
+							buf[j] = '/';
+					return buf;
+				}
+				free(buf);
 			}
 		}
 	}
 	errno = err_win_to_posix();
-	return -1;
+	return NULL;
 }
 
 const char *get_busybox_exec_path(void)
@@ -2092,7 +2294,7 @@ const char *get_busybox_exec_path(void)
 }
 
 #undef mkdir
-int mingw_mkdir(const char *path, int mode UNUSED_PARAM)
+int FAST_FUNC mingw_mkdir(const char *path, int mode UNUSED_PARAM)
 {
 	int ret;
 	struct stat st;
@@ -2105,9 +2307,8 @@ int mingw_mkdir(const char *path, int mode UNUSED_PARAM)
 	if ((ret = _wmkdir(wpath)) < 0) {
 		lerrno = errno;
 		/* NEEDSWORK: avoid double `mingw_pathconv()` */
-		if (lerrno == EACCES && !do_lstat(1, path, &st)) {
-			ret = 0;
-			lerrno = 0;
+		if ( lerrno == EACCES && stat(path, &st) == 0 ) {
+			lerrno = EEXIST;
 		}
 	}
 
@@ -2134,7 +2335,7 @@ static void wfixpathcase(wchar_t *wpath)
 }
 
 #undef chdir
-int mingw_chdir(const char *dirname)
+int FAST_FUNC mingw_chdir(const char *dirname)
 {
 	int ret = -1;
 	wchar_t *wpath = mingw_pathconv(dirname);
@@ -2167,7 +2368,7 @@ int mingw_chdir(const char *dirname)
 }
 
 #undef chmod
-int mingw_chmod(const char *path, int mode)
+int FAST_FUNC mingw_chmod(const char *path, int mode)
 {
 	wchar_t *wpath = mingw_pathconv(path);
 
@@ -2222,7 +2423,7 @@ int fcntl(int fd, int cmd, ...)
 
 #undef unlink
 #undef rmdir
-int mingw_unlink(const char *pathname)
+int FAST_FUNC mingw_unlink(const char *pathname)
 {
 	int ret;
 	wchar_t *wpath = mingw_pathconv(pathname);
@@ -2260,7 +2461,7 @@ pagefile_cb(LPVOID context, PENUM_PAGE_FILE_INFORMATION info,
 	return TRUE;
 }
 
-int sysinfo(struct sysinfo *info)
+int FAST_FUNC sysinfo(struct sysinfo *info)
 {
 	PERFORMANCE_INFORMATION perf;
 	struct pagefile_info pfinfo;
@@ -2297,7 +2498,8 @@ int sysinfo(struct sysinfo *info)
 }
 
 #undef strftime
-size_t mingw_strftime(char *buf, size_t max, const char *format, const struct tm *tm)
+size_t FAST_FUNC
+mingw_strftime(char *buf, size_t max, const char *format, const struct tm *tm)
 {
 	size_t ret;
 	char buffer[64];
@@ -2329,7 +2531,7 @@ size_t mingw_strftime(char *buf, size_t max, const char *format, const struct tm
 			}
 			else if ( t[1] == 's' ) {
 				tm2 = *tm;
-				sprintf(buffer, "%d", (int)mktime(&tm2));
+				sprintf(buffer, "%"LL_FMT"d", (long long)mktime(&tm2));
 				replace = buffer;
 			}
 			else if ( t[1] == 'T' ) {
@@ -2388,7 +2590,7 @@ size_t mingw_strftime(char *buf, size_t max, const char *format, const struct tm
 }
 
 #undef access
-int mingw_access(const char *name, int mode)
+int FAST_FUNC mingw_access(const char *name, int mode)
 {
 	int ret;
 	struct stat s;
@@ -2416,7 +2618,7 @@ int mingw_access(const char *name, int mode)
 	return -1;
 }
 
-int mingw_rmdir(const char *path)
+int FAST_FUNC mingw_rmdir(const char *path)
 {
 	wchar_t *wpath = mingw_pathconv(path);
 
@@ -2458,7 +2660,7 @@ void mingw_sync(void)
 }
 
 #define NUMEXT 5
-static const char win_suffix[NUMEXT][4] = { "sh", "com", "exe", "bat", "cmd" };
+static const char win_suffix[NUMEXT][4] = { "com", "exe", "sh", "bat", "cmd" };
 
 static int has_win_suffix(const char *name, int start)
 {
@@ -2475,42 +2677,71 @@ static int has_win_suffix(const char *name, int start)
 	return 0;
 }
 
-int has_bat_suffix(const char *name)
+int FAST_FUNC has_bat_suffix(const char *name)
 {
 	return has_win_suffix(name, 3);
 }
 
-int has_exe_suffix(const char *name)
+int FAST_FUNC has_exe_suffix(const char *name)
 {
 	return has_win_suffix(name, 0);
 }
 
-int has_exe_suffix_or_dot(const char *name)
+int FAST_FUNC has_exe_suffix_or_dot(const char *name)
 {
 	return last_char_is(name, '.') || has_win_suffix(name, 0);
 }
 
-/* Check if path can be made into an executable by adding a suffix.
- * The suffix is added to the end of the argument which must be
- * long enough to allow this.
+/* Copy path to an allocated string long enough to allow a file extension
+ * to be added. */
+char * FAST_FUNC alloc_ext_space(const char *path)
+{
+	char *s = xmalloc(strlen(path) + 5);
+	strcpy(s, path);
+	return s;
+}
+
+/* Check if path is an executable or can be made into one by adding
+ * a suffix.  The suffix is added to the end of the argument which
+ * must be long enough to allow this.
  *
  * If the return value is TRUE the argument contains the new path,
  * if FALSE the argument is unchanged.
  */
-int add_win32_extension(char *p)
+int FAST_FUNC
+add_win32_extension(char *p)
 {
+	if (file_is_executable(p))
+		return TRUE;
+
 	if (!has_exe_suffix_or_dot(p)) {
 		int i, len = strlen(p);
 
 		p[len] = '.';
-		for (i=0; i<NUMEXT; ++i) {
-			strcpy(p+len+1, win_suffix[i]);
+		for (i = 0; i < NUMEXT; ++i) {
+			strcpy(p + len + 1, win_suffix[i]);
 			if (file_is_executable(p))
 				return TRUE;
 		}
 		p[len] = '\0';
 	}
 	return FALSE;
+}
+
+/*
+ * Determine if a path represents a WIN32 executable, adding a suffix
+ * if necessary.  Returns an allocated string if it does, NULL if not.
+ */
+char * FAST_FUNC
+file_is_win32_exe(const char *name)
+{
+	char *path = alloc_ext_space(name);
+
+	if (add_win32_extension(path))
+		return path;
+
+	free(path);
+	return NULL;
 }
 
 char * FAST_FUNC bs_to_slash(char *str)
@@ -2525,6 +2756,20 @@ char * FAST_FUNC bs_to_slash(char *str)
 	return str;
 }
 
+#if ENABLE_UNICODE_SUPPORT
+MINGW_BB_WCHAR_T * FAST_FUNC bs_to_slash_u(MINGW_BB_WCHAR_T *str)
+{
+	MINGW_BB_WCHAR_T *p;
+
+	for (p=str; *p; ++p) {
+		if ( *p == '\\' ) {
+			*p = '/';
+		}
+	}
+	return str;
+}
+#endif
+
 void FAST_FUNC slash_to_bs(char *p)
 {
 	for (; *p; ++p) {
@@ -2534,25 +2779,46 @@ void FAST_FUNC slash_to_bs(char *p)
 	}
 }
 
+/* Windows strips trailing dots and spaces from the last component of
+ * a file path.  This routine emulates that behaviour so we can preempt
+ * Windows if necessary. */
+void FAST_FUNC strip_dot_space(char *p)
+{
+	char *start = (char *)bb_basename(p);
+	char *end = start + strlen(start);
+
+	while (end > start && (end[-1] == '.' || end[-1] == ' ')) {
+		*--end = '\0';
+	}
+
+	// Strip trailing slash, but not from a drive root (C:/)
+	if (--end != start && (*end == '/' || *end == '\\') &&
+			!(end == p + 2 && root_len(p) == 2))
+		*end = '\0';
+}
+
 size_t FAST_FUNC remove_cr(char *p, size_t len)
 {
 	ssize_t i, j;
 
 	for (i=j=0; i<len; ++i) {
-		if (p[i] != '\r')
-			p[j++] = p[i];
+		if (p[i] == '\r' && i < len - 1 && p[i+1] == '\n')
+			continue;
+		p[j++] = p[i];
 	}
 	return j;
 }
 
-off_t mingw_lseek(int fd, off_t offset, int whence)
+off_t FAST_FUNC mingw_lseek(int fd, off_t offset, int whence)
 {
+	DWORD ftype;
 	HANDLE h = (HANDLE)_get_osfhandle(fd);
 	if (h == INVALID_HANDLE_VALUE) {
 		errno = EBADF;
 		return -1;
 	}
-	if (GetFileType(h) != FILE_TYPE_DISK) {
+	ftype = GetFileType(h);
+	if (ftype != FILE_TYPE_DISK && ftype != FILE_TYPE_CHAR) {
 		errno = ESPIPE;
 		return -1;
 	}
@@ -2578,7 +2844,7 @@ ULONGLONG CompatGetTickCount64(void)
  * set the first argument to NULL.  Returns 0 on error or when there are
  * no more links.
  */
-int enumerate_links(const char *file, char *name)
+int FAST_FUNC enumerate_links(const char *file, char *name)
 {
 	static HANDLE h = INVALID_HANDLE_VALUE;
 	char aname[PATH_MAX];
@@ -2610,25 +2876,9 @@ int enumerate_links(const char *file, char *name)
 }
 #endif
 
-#if ENABLE_ASH_NOCONSOLE
-void hide_console(void)
-{
-	DWORD dummy;
-	DECLARE_PROC_ADDR(DWORD, GetConsoleProcessList, LPDWORD, DWORD);
-	DECLARE_PROC_ADDR(BOOL, ShowWindow, HWND, int);
-
-	if (INIT_PROC_ADDR(kernel32.dll, GetConsoleProcessList) &&
-			INIT_PROC_ADDR(user32.dll, ShowWindow)) {
-		if (GetConsoleProcessList(&dummy, 1) == 1) {
-			ShowWindow(GetConsoleWindow(), SW_HIDE);
-		}
-	}
-}
-#endif
-
 /* Return the length of the root of a UNC path, i.e. the '//host/share'
  * component, or 0 if the path doesn't look like that. */
-int unc_root_len(const char *dir)
+int FAST_FUNC unc_root_len(const char *dir)
 {
 	const char *s = dir + 2;
 	int len;
@@ -2649,7 +2899,7 @@ int unc_root_len(const char *dir)
 
 /* Return the length of the root of a path, i.e. either the drive or
  * UNC '//host/share', or 0 if the path doesn't look like that. */
-int root_len(const char *path)
+int FAST_FUNC root_len(const char *path)
 {
 	if (path == NULL)
 		return 0;
@@ -2658,37 +2908,21 @@ int root_len(const char *path)
 	return unc_root_len(path);
 }
 
-const char *get_system_drive(void)
+const char * FAST_FUNC get_system_drive(void)
 {
-	static char *drive = NULL;
+	static const char *drive = NULL;
+	char sysdir[PATH_MAX];
 	int len;
 
 	if (drive == NULL) {
-		const char *sysdir = getsysdir();
-		if ((len=root_len(sysdir))) {
+		UINT ret = GetSystemDirectory(sysdir, PATH_MAX);
+		if ((ret != 0 && ret < PATH_MAX) && (len=root_len(sysdir)))
 			drive = xstrndup(sysdir, len);
-		}
+		else
+			drive = "";
 	}
 
 	return getenv(BB_SYSTEMROOT) ?: drive;
-}
-
-/* Return pointer to system drive if path is of form '/file', else NULL */
-const char *need_system_drive(const char *path)
-{
-	if (root_len(path) == 0 && (path[0] == '/' || path[0] == '\\'))
-		return get_system_drive();
-	return NULL;
-}
-
-/* Allocate a string long enough to allow a system drive prefix and
- * file extension to be added to path.  Add the prefix if necessary. */
-char *alloc_system_drive(const char *path)
-{
-	const char *sd = need_system_drive(path);
-	char *s = xmalloc(strlen(path) + 5 + (sd ? strlen(sd) : 0));
-	strcpy(stpcpy(s, sd ?: ""), path);
-	return s;
 }
 
 int chdir_system_drive(void)
@@ -2696,7 +2930,7 @@ int chdir_system_drive(void)
 	const char *sd = get_system_drive();
 	int ret = -1;
 
-	if (sd)
+	if (*sd)
 		ret = chdir(auto_string(concat_path_file(sd, "")));
 	return ret;
 }
@@ -2705,32 +2939,23 @@ int chdir_system_drive(void)
  * This function is used to make relative paths absolute before a call
  * to chdir_system_drive().  It's unlikely to be useful in other cases.
  *
- * If the argument is an absolute path or a relative path which resolves
- * to a path on the system drive return 'path'.  If it's a relative path
- * which resolves to a path that isn't on the system drive return an
- * allocated string containing the resolved path.  Die on failure,
+ * If the argument is an absolute path return 'path', otherwise return
+ * an allocated string containing the resolved path.  Die on failure,
  * which is most likely because the file doesn't exist.
  */
-char *xabsolute_path(char *path)
+char * FAST_FUNC xabsolute_path(char *path)
 {
 	char *rpath;
-	const char *sd;
 
 	if (root_len(path) != 0)
 		return path;	// absolute path
 	rpath = xmalloc_realpath(path);
-	if (rpath) {
-		sd = get_system_drive();
-		if (sd && is_prefixed_with_case(rpath, sd)) {
-			free(rpath);
-			return path;	// resolved path is on system drive
-		}
+	if (rpath)
 		return rpath;
-	}
 	bb_perror_msg_and_die("can't open '%s'", path);
 }
 
-char *get_drive_cwd(const char *path, char *buffer, int size)
+char * FAST_FUNC get_drive_cwd(const char *path, char *buffer, int size)
 {
 	char drive[3] = { *path, ':', '\0' };
 	DWORD ret;
@@ -2741,7 +2966,7 @@ char *get_drive_cwd(const char *path, char *buffer, int size)
 	return bs_to_slash(buffer);
 }
 
-void fix_path_case(char *path)
+void FAST_FUNC fix_path_case(char *path)
 {
 	char resolved[PATH_MAX];
 	int len;
@@ -2763,7 +2988,7 @@ void fix_path_case(char *path)
 	}
 }
 
-void make_sparse(int fd, off_t start, off_t end)
+void FAST_FUNC make_sparse(int fd, off_t start, off_t end)
 {
 	DWORD dwTemp;
 	HANDLE fh;
@@ -2780,7 +3005,7 @@ void make_sparse(int fd, off_t start, off_t end)
 					 NULL, 0, &dwTemp, NULL);
 }
 
-void *get_proc_addr(const char *dll, const char *function,
+void * FAST_FUNC get_proc_addr(const char *dll, const char *function,
 					struct proc_addr *proc)
 {
 	/* only do this once */
@@ -2791,26 +3016,24 @@ void *get_proc_addr(const char *dll, const char *function,
 		 * on Windows 7.  If it does, retry using LoadLibrary with an
 		 * explicit, backslash-separated path. */
 		if (!hnd) {
-			char dir[PATH_MAX], *path;
-
-			GetSystemDirectory(dir, PATH_MAX);
-			path = concat_path_file(dir, dll);
-			slash_to_bs(path);
-			hnd = LoadLibrary(path);
-			free(path);
+			char buf[PATH_MAX];
+			UINT ret = GetSystemDirectory(buf, PATH_MAX);
+			if (ret != 0 && ret < PATH_MAX) {
+				char *path = concat_path_file(buf, dll);
+				slash_to_bs(path);
+				hnd = LoadLibrary(path);
+				free(path);
+			}
 		}
 
 		if (hnd)
 			proc->pfunction = GetProcAddress(hnd, function);
 		proc->initialized = 1;
 	}
-	/* set ENOSYS if DLL or function was not found */
-	if (!proc->pfunction)
-		errno = ENOSYS;
 	return proc->pfunction;
 }
 
-int unix_path(const char *path)
+int FAST_FUNC unix_path(const char *path)
 {
 	int i;
 	char *p = xstrdup(path);
@@ -2823,7 +3046,7 @@ int unix_path(const char *path)
 
 /* Return true if file is referenced using a path.  This means a path
  * look-up isn't required. */
-int has_path(const char *file)
+int FAST_FUNC has_path(const char *file)
 {
 	return strchr(file, '/') || strchr(file, '\\') ||
 				has_dos_drive_prefix(file);
@@ -2838,7 +3061,7 @@ int has_path(const char *file)
  * Paths of the form /dir/file or c:dir/file aren't relative by this
  * definition.
  */
-int is_relative_path(const char *path)
+int FAST_FUNC is_relative_path(const char *path)
 {
 	return !is_dir_sep(path[0]) && !has_dos_drive_prefix(path);
 }
@@ -2851,7 +3074,7 @@ int is_relative_path(const char *path)
  * matches the file name from bb_busybox_exec_path (with appropriate
  * allowance for 'busybox*.exe').
  */
-const char *applet_to_exe(const char *name)
+const char * FAST_FUNC applet_to_exe(const char *name)
 {
 	const char *exefile = bb_basename(bb_busybox_exec_path);
 	const char *exesuff = is_prefixed_with_case(exefile, name);
@@ -2861,5 +3084,90 @@ const char *applet_to_exe(const char *name)
 		return bb_busybox_exec_path;
 	}
 	return name;
+}
+#endif
+
+/*
+ * Append a word to a space-separated string of words.  The first
+ * call should use a NULL pointer for str, subsequent calls should
+ * pass an allocated string which will be freed.
+ */
+char * FAST_FUNC xappendword(const char *str, const char *word)
+{
+	char *newstr = str ? xasprintf("%s %s", str, word) : xstrdup(word);
+	free((void *)str);
+	return newstr;
+}
+
+/*
+ * Detect if the environment contains certain mixed-case names:
+ *
+ *   Path          is present in a standard Windows environment
+ *   ComSpec       is present in WINE
+ *   ProgramData   is present in Cygwin/MSYS2
+ */
+int
+windows_env(void)
+{
+	const char *names = "PATH=\0""COMSPEC=\0""PROGRAMDATA=\0";
+	const char *n;
+
+	for (char **envp = environ; envp && *envp; envp++) {
+		for (n = names; *n; ) {
+			if (is_prefixed_with_case(*envp, n) &&
+						!is_prefixed_with(*envp, n)) {
+				return TRUE;
+			}
+			while (*n++)
+				;
+		}
+	}
+	return FALSE;
+}
+
+void FAST_FUNC
+change_critical_error_dialogs(const char *newval)
+{
+	SetErrorMode(newval && newval[0] == '1' && newval[1] == '\0' ?
+					0 : SEM_FAILCRITICALERRORS);
+}
+
+char * FAST_FUNC exe_relative_path(const char *tail)
+{
+	char *exepath = xstrdup(bb_busybox_exec_path);
+	char *relpath = concat_path_file(dirname(exepath), tail);
+	free(exepath);
+	return relpath;
+}
+
+int FAST_FUNC mingw_shell_execute(SHELLEXECUTEINFO *info)
+{
+	DECLARE_PROC_ADDR(BOOL, ShellExecuteExA, SHELLEXECUTEINFOA *);
+	char *lpath;
+	int ret;
+
+	if (!INIT_PROC_ADDR(shell32.dll, ShellExecuteExA)) {
+		errno = ENOSYS;
+		return FALSE;
+	}
+
+	// ShellExecuteEx() needs backslash as separator in UNC paths.
+	lpath = xstrdup(info->lpFile);
+	slash_to_bs(lpath);
+	info->lpFile = lpath;
+
+	ret = ShellExecuteExA(info);
+
+	free(lpath);
+	return ret;
+}
+
+#if ENABLE_FEATURE_USE_CNG_API
+void FAST_FUNC mingw_die_if_error(NTSTATUS status, const char *function_name)
+{
+	if (!NT_SUCCESS(status)) {
+		bb_error_msg_and_die("call to %s failed: 0x%08lX",
+								function_name, (unsigned long)status);
+	}
 }
 #endif

@@ -7,7 +7,7 @@
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
 //config:config LSPCI
-//config:	bool "lspci (6.3 kb)"
+//config:	bool "lspci (6.4 kb)"
 //config:	default y
 //config:	help
 //config:	lspci is a utility for displaying information about PCI buses in the
@@ -47,7 +47,7 @@ static int FAST_FUNC fileAction(struct recursive_state *state UNUSED_PARAM,
 	int pci_class = 0, pci_vid = 0, pci_did = 0;
 	int pci_subsys_vid = 0, pci_subsys_did = 0;
 
-	char *uevent_filename = concat_path_file(fileName, "/uevent");
+	char *uevent_filename = concat_path_file(fileName, "uevent");
 	parser = config_open2(uevent_filename, fopen_for_read);
 	free(uevent_filename);
 
@@ -80,7 +80,6 @@ static int FAST_FUNC fileAction(struct recursive_state *state UNUSED_PARAM,
 		}
 	}
 	config_close(parser);
-
 
 	if (option_mask32 & OPT_m) {
 		printf("%s \"Class %04x\" \"%04x\" \"%04x\" \"%04x\" \"%04x\"",

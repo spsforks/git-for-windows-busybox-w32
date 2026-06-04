@@ -9,7 +9,7 @@
  * Licensed under GPLv2, see file LICENSE in this source tree.
  */
 //config:config DMESG
-//config:	bool "dmesg (3.7 kb)"
+//config:	bool "dmesg (3.9 kb)"
 //config:	default y
 //config:	help
 //config:	dmesg is used to examine or control the kernel ring buffer. When the
@@ -90,7 +90,6 @@ int dmesg_main(int argc UNUSED_PARAM, char **argv)
 		bb_simple_perror_msg_and_die("klogctl");
 	if (len == 0)
 		return EXIT_SUCCESS;
-
 
 	if (ENABLE_FEATURE_DMESG_PRETTY && !(opts & OPT_r)) {
 		int last = '\n';

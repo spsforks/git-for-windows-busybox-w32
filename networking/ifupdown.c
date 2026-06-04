@@ -306,7 +306,6 @@ static int count_netmask_bits(const char *dotted_quad)
 //	d = ~d; /* 11110000 -> 00001111 */
 
 	/* Shorter version */
-	int result;
 	struct in_addr ip;
 	unsigned d;
 
@@ -316,12 +315,7 @@ static int count_netmask_bits(const char *dotted_quad)
 	d = ~d; /* 11110000 -> 00001111 */
 	if (d & (d+1)) /* check that it is in 00001111 form */
 		return -1; /* no it is not */
-	result = 32;
-	while (d) {
-		d >>= 1;
-		result--;
-	}
-	return result;
+	return bb_popcnt_32(~d);
 }
 # endif
 
@@ -369,7 +363,7 @@ static char *parse(const char *command, struct interface_defn_t *ifd)
 			break;
 		case '%':
 			{
-				char *nextpercent;
+				const char *nextpercent;
 				char *varvalue;
 
 				command++;
@@ -901,16 +895,15 @@ static struct interfaces_file_t *read_interfaces(const char *filename, struct in
 	while ((buf = xmalloc_fgetline(f)) != NULL) {
 #if ENABLE_DESKTOP
 		/* Trailing "\" concatenates lines */
+//TODO: check how to handle "line\\" (double backslashes)
 		char *p;
 		while ((p = last_char_is(buf, '\\')) != NULL) {
 			*p = '\0';
 			rest_of_line = xmalloc_fgetline(f);
 			if (!rest_of_line)
 				break;
-			p = xasprintf("%s%s", buf, rest_of_line);
-			free(buf);
+			xasprintf_inplace(buf, "%s%s", buf, rest_of_line);
 			free(rest_of_line);
-			buf = p;
 		}
 #endif
 		rest_of_line = buf;

@@ -15,8 +15,9 @@ CPPFLAGS += \
 	-include include/autoconf.h \
 	-D_GNU_SOURCE -DNDEBUG \
 	$(if $(CONFIG_LFS),-D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64) \
+	$(if $(CONFIG_TIME64),-D_TIME_BITS=64) \
 	-DMINGW_VER=$(squote)$(quote)$(MINGW_VER)$(quote)$(squote) \
-	-DBB_VER=$(squote)$(quote)$(BB_VER)$(quote)$(squote)
+	$(if $(CONFIG_PLATFORM_MINGW32),,-DBB_VER=$(squote)$(quote)$(BB_VER)$(quote)$(squote))
 
 CFLAGS += $(call cc-option,-Wall,)
 CFLAGS += $(call cc-option,-Wshadow,)
@@ -48,12 +49,16 @@ endif
 # gcc 3.x emits bogus "old style proto" warning on find.c:alloc_action()
 CFLAGS += $(call cc-ifversion, -ge, 0400, -Wold-style-definition)
 
-ifneq ($(CC),clang)
+ifneq ($(lastword $(subst -, ,$(CC))),clang)
 # "clang-9: warning: optimization flag '-finline-limit=0' is not supported
 CFLAGS += $(call cc-option,-finline-limit=0,)
 endif
 
+ifneq ($(CONFIG_STATICS_IN_BSS),y)
 CFLAGS += $(call cc-option,-fno-builtin-strlen -fomit-frame-pointer -ffunction-sections -fdata-sections,)
+else
+CFLAGS += $(call cc-option,-fno-builtin-strlen -fomit-frame-pointer -ffunction-sections,)
+endif
 # -fno-guess-branch-probability: prohibit pseudo-random guessing
 # of branch probabilities (hopefully makes bloatcheck more stable):
 CFLAGS += $(call cc-option,-fno-guess-branch-probability,)
@@ -66,20 +71,25 @@ CFLAGS += $(call cc-option,-static-libgcc,)
 endif
 
 CFLAGS += $(call cc-option,-falign-functions=1,)
-ifneq ($(CC),clang)
+ifneq ($(lastword $(subst -, ,$(CC))),clang)
 # "clang-9: warning: optimization flag '-falign-jumps=1' is not supported" (and same for other two)
 CFLAGS += $(call cc-option,-falign-jumps=1 -falign-labels=1 -falign-loops=1,)
 endif
 
 # Defeat .eh_frame bloat (gcc 4.6.3 x86-32 defconfig: 20% smaller busybox binary):
+ifneq ($(CONFIG_UNWIND_TABLES),y)
 CFLAGS += $(call cc-option,-fno-unwind-tables,)
 CFLAGS += $(call cc-option,-fno-asynchronous-unwind-tables,)
+else
+CFLAGS += $(call cc-option,-funwind-tables,)
+CFLAGS += $(call cc-option,-fasynchronous-unwind-tables,)
+endif
 # No automatic printf->puts,putchar conversions
 # (try disabling this and comparing assembly, it's instructive)
 CFLAGS += $(call cc-option,-fno-builtin-printf,)
 
 # clang-9 does not like "str" + N and "if (CONFIG_ITEM && cond)" constructs
-ifeq ($(CC),clang)
+ifeq ($(lastword $(subst -, ,$(CC))),clang)
 CFLAGS += $(call cc-option,-Wno-string-plus-int -Wno-constant-logical-operand)
 endif
 
@@ -148,8 +158,17 @@ endif
 
 ifeq ($(CONFIG_PLATFORM_MINGW32),y)
 CFLAGS += -Iwin32 -DHAVE_STRING_H=1 -DHAVE_CONFIG_H=0 -fno-builtin-stpcpy -fno-builtin-stpncpy -fno-ident -fno-builtin-strndup
+# this seems to be necessary for setjmp/longjmp to work with clang
+ifeq ($(lastword $(subst -, ,$(CC))),clang)
+ifeq ($(CONFIG_UNWIND_TABLES),y)
+CFLAGS += $(call cc-option,-fexceptions,)
+else
+CFLAGS += $(call cc-option,-fsjlj-exceptions,)
+endif
+endif
+
 EXEEXT = .exe
-LDLIBS += ws2_32
+LDLIBS += ws2_32 bcrypt secur32
 endif
 
 ifneq ($(CONFIG_PLATFORM_MINGW32),y)
@@ -194,6 +213,9 @@ endif
 
 ifeq ($(CONFIG_FEATURE_NSLOOKUP_BIG),y)
 ifneq (,$(findstring linux,$(shell $(CC) $(CFLAGS) -dumpmachine)))
+LDLIBS += resolv
+endif
+ifneq (,$(findstring gnu,$(shell $(CC) $(CFLAGS) -dumpmachine)))
 LDLIBS += resolv
 endif
 endif

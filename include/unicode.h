@@ -33,7 +33,11 @@ enum {
 
 # if CONFIG_LAST_SUPPORTED_WCHAR < 126 || CONFIG_LAST_SUPPORTED_WCHAR >= 0x30000
 #  undef CONFIG_LAST_SUPPORTED_WCHAR
+#  if ENABLE_PLATFORM_MINGW32
+#  define CONFIG_LAST_SUPPORTED_WCHAR 0x10ffff  /* full unicode range */
+#  else
 #  define CONFIG_LAST_SUPPORTED_WCHAR 0x2ffff
+#  endif
 # endif
 
 # if CONFIG_LAST_SUPPORTED_WCHAR < 0x300
@@ -86,6 +90,21 @@ void reinit_unicode(const char *LANG) FAST_FUNC;
 
 #  undef MB_CUR_MAX
 #  define MB_CUR_MAX 6
+
+#if ENABLE_PLATFORM_MINGW32
+  #undef wint_t
+  #undef mbstate_t
+  #undef mbstowcs
+  #undef wcstombs
+  #undef wcrtomb
+  #undef iswspace
+  #undef iswalnum
+  #undef iswpunct
+  #undef wcwidth
+
+  #undef wchar_t
+  #define wchar_t uint32_t  /* keep in sync with MINGW_BB_WCHAR_T */
+#endif
 
 /* Prevent name collisions */
 #  define wint_t    bb_wint_t

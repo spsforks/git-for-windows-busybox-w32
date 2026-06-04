@@ -249,29 +249,37 @@ static void get_user_strings(void)
 	}
 }
 
+static NOINLINE const char *get_homedir_or_NULL(void)
+{
+	const char *home;
+
+# if ENABLE_SHELL_ASH || ENABLE_SHELL_HUSH
+	home = state && state->sh_get_var ? state->sh_get_var("HOME") : getenv("HOME");
+# else
+	home = getenv("HOME");
+# endif
+	if (home != NULL && home[0] != '\0') {
+# if ENABLE_PLATFORM_MINGW32
+		char *t = auto_string(xstrdup(home));
+		bs_to_slash(t);
+		home = t;
+# endif
+		return home;
+	}
+
+	if (!got_user_strings)
+		get_user_strings();
+	return home_pwd_buf;
+}
+#endif
+
+#if ENABLE_FEATURE_EDITING_FANCY_PROMPT
 static const char *get_username_str(void)
 {
 	if (!got_user_strings)
 		get_user_strings();
 	return user_buf ? user_buf : "";
 	/* btw, bash uses "I have no name!" string if uid has no entry */
-}
-
-static NOINLINE const char *get_homedir_or_NULL(void)
-{
-	const char *home;
-
-# if ENABLE_SHELL_ASH || ENABLE_SHELL_HUSH
-	home = state->sh_get_var ? state->sh_get_var("HOME") : getenv("HOME");
-# else
-	home = getenv("HOME");
-# endif
-	if (home != NULL && home[0] != '\0')
-		return home;
-
-	if (!got_user_strings)
-		get_user_strings();
-	return home_pwd_buf;
 }
 #endif
 
@@ -343,7 +351,7 @@ static unsigned save_string(char *dst, unsigned maxsize)
 		return i;
 	}
 }
-/* I thought just fputwc(c, stdout) would work. But no... */
+/* I thought just fputwc(c, stderr) would work. But no... */
 static void BB_PUTCHAR(wchar_t c)
 {
 	if (unicode_status == UNICODE_ON) {
@@ -352,11 +360,11 @@ static void BB_PUTCHAR(wchar_t c)
 		ssize_t len = wcrtomb(buf, c, &mbst);
 		if (len > 0) {
 			buf[len] = '\0';
-			fputs_stdout(buf);
+			fputs(buf, stderr);
 		}
 	} else {
 		/* In this case, c is always one byte */
-		putchar(c);
+		bb_putchar_stderr(c);
 	}
 }
 # if ENABLE_UNICODE_COMBINING_WCHARS || ENABLE_UNICODE_WIDE_WCHARS
@@ -402,7 +410,7 @@ static void save_string(char *dst, unsigned maxsize)
 	safe_strncpy(dst, command_ps, maxsize);
 }
 # endif
-# define BB_PUTCHAR(c) bb_putchar(c)
+# define BB_PUTCHAR(c) bb_putchar_stderr(c)
 /* Should never be called: */
 int adjust_width_and_validate_wc(unsigned *width_adj, int wc);
 #endif
@@ -449,7 +457,7 @@ static void put_cur_glyph_and_inc_cursor(void)
 		 * have automargin (IOW: it is moving cursor to next line
 		 * by itself (which is wrong for VT-10x terminals)),
 		 * this will break things: there will be one extra empty line */
-		puts("\r"); /* + implicit '\n' */
+		fputs("\r\n", stderr);
 #else
 		/* VT-10x terminals don't wrap cursor to next line when last char
 		 * on the line is printed - cursor stays "over" this char.
@@ -461,7 +469,7 @@ static void put_cur_glyph_and_inc_cursor(void)
 		if (c == BB_NUL)
 			c = ' ';
 		BB_PUTCHAR(c);
-		bb_putchar('\b');
+		bb_putchar_stderr('\b');
 #endif
 		cmdedit_y++;
 		if (!ENABLE_UNICODE_WIDE_WCHARS || ofs_to_right == 0) {
@@ -523,12 +531,12 @@ static void goto_new_line(void)
 	put_till_end_and_adv_cursor();
 	/* "cursor == 0" is only if prompt is "" and user input is empty */
 	if (cursor == 0 || cmdedit_x != 0)
-		bb_putchar('\n');
+		bb_putchar_stderr('\n');
 }
 
 static void beep(void)
 {
-	bb_putchar('\007');
+	bb_putchar_stderr('\007');
 }
 
 /* Full or last/sole prompt line, reset edit cursor, calculate terminal cursor.
@@ -536,7 +544,10 @@ static void beep(void)
  */
 static void put_prompt_custom(bool is_full)
 {
-	fputs_stdout((is_full ? cmdedit_prompt : prompt_last_line));
+	/* https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html
+	 * says that shells must write $PSn to stderr, not stdout.
+	 */
+	fputs((is_full ? cmdedit_prompt : prompt_last_line), stderr);
 	cursor = 0;
 	cmdedit_y = cmdedit_prmt_len / cmdedit_termw; /* new quasireal y */
 	cmdedit_x = cmdedit_prmt_len % cmdedit_termw;
@@ -574,16 +585,16 @@ static void input_backward(unsigned num)
 			/* This is longer by 5 bytes on x86.
 			 * Also gets miscompiled for ARM users
 			 * (busybox.net/bugs/view.php?id=2274).
-			 * printf(("\b\b\b\b" + 4) - num);
+			 * fprintf(("\b\b\b\b" + 4) - num, stderr);
 			 * return;
 			 */
 			do {
-				bb_putchar('\b');
+				bb_putchar_stderr('\b');
 			} while (--num);
 			return;
 		}
 #endif
-		printf(ESC"[%uD", num);
+		fprintf(stderr, ESC"[%uD", num);
 		return;
 	}
 
@@ -608,7 +619,7 @@ static void input_backward(unsigned num)
 		 */
 		unsigned sv_cursor;
 		/* go to 1st column; go up to first line */
-		printf("\r" ESC"[%uA", cmdedit_y);
+		fprintf(stderr, "\r" ESC"[%uA", cmdedit_y);
 		cmdedit_y = 0;
 		sv_cursor = cursor;
 		put_prompt_last_line(); /* sets cursor to 0 */
@@ -623,12 +634,12 @@ static void input_backward(unsigned num)
 		cmdedit_x = (cmdedit_termw * cmdedit_y - num) % cmdedit_termw;
 		cmdedit_y -= lines_up;
 		/* go to 1st column; go up */
-		printf("\r" ESC"[%uA", lines_up);
+		fprintf(stderr, "\r" ESC"[%uA", lines_up);
 		/* go to correct column.
 		 * xterm, konsole, Linux VT interpret 0 as 1 below! wow.
 		 * need to *make sure* we skip it if cmdedit_x == 0 */
 		if (cmdedit_x)
-			printf(ESC"[%uC", cmdedit_x);
+			fprintf(stderr, ESC"[%uC", cmdedit_x);
 	}
 }
 
@@ -636,11 +647,11 @@ static void input_backward(unsigned num)
 static void draw_custom(int y, int back_cursor, bool is_full)
 {
 	if (y > 0) /* up y lines */
-		printf(ESC"[%uA", y);
-	bb_putchar('\r');
+		fprintf(stderr, ESC"[%uA", y);
+	bb_putchar_stderr('\r');
 	put_prompt_custom(is_full);
 	put_till_end_and_adv_cursor();
-	printf(SEQ_CLEAR_TILL_END_OF_SCREEN);
+	fputs(SEQ_CLEAR_TILL_END_OF_SCREEN, stderr);
 	input_backward(back_cursor);
 }
 
@@ -685,7 +696,7 @@ static void input_delete(int save)
 	command_len--;
 	put_till_end_and_adv_cursor();
 	/* Last char is still visible, erase it (and more) */
-	printf(SEQ_CLEAR_TILL_END_OF_SCREEN);
+	fputs(SEQ_CLEAR_TILL_END_OF_SCREEN, stderr);
 	input_backward(cursor - j);     /* back to old pos cursor */
 }
 
@@ -724,7 +735,19 @@ static void input_forward(void)
 #if !ENABLE_PLATFORM_MINGW32
 		put_cur_glyph_and_inc_cursor();
 #else
-		inc_cursor();
+	/*
+	 * inc_cursor improves forward cursor movement appearance on
+	 * win 7/8 console, but it's broken with unicode wide-glyphs,
+	 * e.g. paste and move forward over: echo 开开心心过每一天
+	 * so disable inc_cursor when unicode is active (which is only
+	 * windows 10+, where inc_cursor is not needed anyway).
+	 */
+	{
+		if (unicode_status == UNICODE_ON)
+			put_cur_glyph_and_inc_cursor();
+		else
+			inc_cursor();
+	}
 #endif
 }
 
@@ -736,14 +759,6 @@ static void input_forward(void)
 //Also, perhaps "foo b<TAB> needs to complete to "foo bar" <cursor>,
 //not "foo bar <cursor>...
 
-# if ENABLE_PLATFORM_MINGW32
-/* use case-insensitive comparisons for filenames */
-#  define is_prefixed_with(s, k) is_prefixed_with_case(s, k)
-#  define qsort_string_vector(s, c) qsort_string_vector_case(s, c)
-#  define strcmp(s, t) strcasecmp(s, t)
-#  define strncmp(s, t, n) strncasecmp(s, t, n)
-# endif
-
 static void free_tab_completion_data(void)
 {
 	if (matches) {
@@ -754,8 +769,15 @@ static void free_tab_completion_data(void)
 	}
 }
 
-static void add_match(char *matched)
+#if !ENABLE_PLATFORM_MINGW32
+# define add_match(m, s) add_match(m)
+#endif
+
+static void add_match(char *matched, int sensitive)
 {
+# if ENABLE_PLATFORM_MINGW32
+	size_t len;
+# endif
 	unsigned char *p = (unsigned char*)matched;
 	while (*p) {
 		/* ESC attack fix: drop any string with control chars */
@@ -764,6 +786,11 @@ static void add_match(char *matched)
 		 || (!ENABLE_UNICODE_SUPPORT && *p >= 0x7f)
 		 || (ENABLE_UNICODE_SUPPORT && *p == 0x7f)
 # else
+		/*
+		 * on Windows, *p > 0x7f is never control:
+		 * without unicode active: these are normal codepage chars.
+		 * with unicode active: these are UTF8 continuation bytes.
+		 */
 		 || *p == 0x7f
 # endif
 		) {
@@ -772,10 +799,25 @@ static void add_match(char *matched)
 		}
 		p++;
 	}
+# if ENABLE_PLATFORM_MINGW32
+	/* The case-sensitivity flag is stored after NUL terminator */
+	len = strlen(matched);
+	matched = xrealloc(matched, len + 2);
+	matched[len + 1] = sensitive;
+# endif
 	matches = xrealloc_vector(matches, 4, num_matches);
 	matches[num_matches] = matched;
 	num_matches++;
 }
+
+# if ENABLE_PLATFORM_MINGW32
+static int is_case_sensitive(const char *p)
+{
+	while (*p++)
+		;
+	return *p;
+}
+# endif
 
 # if ENABLE_FEATURE_USERNAME_COMPLETION
 /* Replace "~user/..." with "/homedir/...".
@@ -828,7 +870,7 @@ static NOINLINE unsigned complete_username(const char *ud)
 	while ((pw = getpwent()) != NULL) {
 		/* Null usernames should result in all users as possible completions. */
 		if (/* !ud[0] || */ is_prefixed_with(pw->pw_name, ud)) {
-			add_match(xasprintf("~%s/", pw->pw_name));
+			add_match(xasprintf("~%s/", pw->pw_name), TRUE);
 		}
 	}
 	endpwent(); /* don't keep password file open */
@@ -883,8 +925,8 @@ static unsigned path_parse(char ***p)
 		res[npth++] = tmp;
 	}
 	/* special case: "match subdirectories of the current directory" */
-	/*res[npth++] = NULL; - filled by xzalloc() */
-	return npth;
+	/*res[npth] = NULL; - filled by xzalloc() */
+	return npth + 1;
 }
 
 /* Complete command, directory or file name.
@@ -935,9 +977,13 @@ static NOINLINE unsigned complete_cmd_dir_file(const char *command, int type)
 	if (type == FIND_EXE_ONLY && !dirbuf) {
 # if ENABLE_FEATURE_SH_STANDALONE && NUM_APPLETS != 1
 		const char *p = applet_names;
+#  if ENABLE_PLATFORM_MINGW32
+		const char *shpath = state->flags & WITH_PATH_LOOKUP ?
+								state->path_lookup : NULL;
+#  endif
 		while (*p) {
-			if (strncmp(basecmd, p, baselen) == 0 && is_applet_preferred(p))
-				add_match(xstrdup(p));
+			if (strncmp(basecmd, p, baselen) == 0 && prefer_applet(p, shpath))
+				add_match(xstrdup(p), TRUE);
 			while (*p++ != '\0')
 				continue;
 		}
@@ -950,7 +996,7 @@ static NOINLINE unsigned complete_cmd_dir_file(const char *command, int type)
 				if (!b)
 					break;
 				if (strncmp(basecmd, b, baselen) == 0)
-					add_match(xstrdup(b));
+					add_match(xstrdup(b), TRUE);
 			}
 		}
 # endif
@@ -972,9 +1018,6 @@ static NOINLINE unsigned complete_cmd_dir_file(const char *command, int type)
 		}
 
 		lpath = *paths[i] ? paths[i] : ".";
-#if ENABLE_PLATFORM_MINGW32
-		lpath = auto_string(alloc_system_drive(lpath));
-#endif
 		dir = opendir(lpath);
 		if (!dir)
 			continue; /* don't print an error */
@@ -987,7 +1030,11 @@ static NOINLINE unsigned complete_cmd_dir_file(const char *command, int type)
 			if (!basecmd[0] && DOT_OR_DOTDOT(name_found))
 				continue;
 			/* match? */
+# if ENABLE_PLATFORM_MINGW32
+			if (strncasecmp(basecmd, name_found, baselen) != 0)
+# else
 			if (strncmp(basecmd, name_found, baselen) != 0)
+# endif
 				continue; /* no */
 
 			found = concat_path_file(lpath, name_found);
@@ -998,6 +1045,10 @@ static NOINLINE unsigned complete_cmd_dir_file(const char *command, int type)
 				goto cont; /* hmm, remove in progress? */
 
 # if ENABLE_PLATFORM_MINGW32
+#  if ENABLE_ASH_GLOB_OPTIONS
+			if (state->sh_accept_glob && !state->sh_accept_glob(found))
+				goto cont;
+#  endif
 			if (type == FIND_EXE_ONLY && S_ISREG(st.st_mode) &&
 					!(st.st_mode & S_IXUSR))
 				goto cont;
@@ -1021,7 +1072,7 @@ static NOINLINE unsigned complete_cmd_dir_file(const char *command, int type)
 					goto cont;
 			}
 			/* add it to the list */
-			add_match(found);
+			add_match(found, FALSE);
 			continue;
  cont:
 			free(found);
@@ -1062,8 +1113,8 @@ static void remove_chunk(int16_t *int_buf, int beg, int end)
 	if (dbg_bmp) {
 		int i;
 		for (i = 0; int_buf[i]; i++)
-			bb_putchar((unsigned char)int_buf[i]);
-		bb_putchar('\n');
+			bb_putchar_stderr((unsigned char)int_buf[i]);
+		bb_putchar_stderr('\n');
 	}
 }
 /* Caller ensures that match_buf points to a malloced buffer
@@ -1246,14 +1297,15 @@ static void showfiles(void)
 		int nc;
 
 		for (nc = 1; nc < ncols && n+nrows < nfiles; n += nrows, nc++) {
-			printf("%s%-*s", matches[n],
+			fprintf(stderr, "%s%-*s", matches[n],
 				(int)(column_width - unicode_strwidth(matches[n])), ""
 			);
 		}
 		if (ENABLE_UNICODE_SUPPORT)
-			puts(printable_string(matches[n]));
+			fputs(printable_string(matches[n]), stderr);
 		else
-			puts(matches[n]);
+			fputs(matches[n], stderr);
+		bb_putchar_stderr('\n');
 	}
 }
 
@@ -1293,11 +1345,25 @@ static NOINLINE void input_tab(smallint *lastWasTab)
 	size_t len_found;
 	/* Length of string used for matching */
 	unsigned match_pfx_len = match_pfx_len;
-#if ENABLE_PLATFORM_MINGW32
+# if ENABLE_PLATFORM_MINGW32
+	int chosen_index = 0;
+	int chosen_sens = FALSE;
+#  if !ENABLE_UNICODE_SUPPORT
+	/*
+	 * FIXME: the next three vars are unused with ENABLE_UNICODE_SUPPORT
+	 * because the mingw code which uses them to update a tab-completion
+	 * prefix to the correct case (e.g. ~/desk<tab> to ~/Desktop/) is
+	 * not compiled, and so e.g. ~/desk<tab> completes to ~/desktop/ .
+	 */
 	unsigned orig_pfx_len;
 	char *target;
 	const char *source;
-#endif
+#  endif
+#  define first_match 0
+# else
+#  define chosen_index 0
+#  define first_match 1
+# endif
 	int find_type;
 # if ENABLE_UNICODE_SUPPORT
 	/* cursor pos in command converted to multibyte form */
@@ -1362,9 +1428,9 @@ static NOINLINE void input_tab(smallint *lastWasTab)
 	{
 		const char *e = match_buf + strlen(match_buf);
 		const char *s = e - match_pfx_len;
-#if ENABLE_PLATFORM_MINGW32
+# if ENABLE_PLATFORM_MINGW32 && !ENABLE_UNICODE_SUPPORT
 		orig_pfx_len = match_pfx_len;
-#endif
+# endif
 		while (s < e)
 			if (is_special_char(*s++))
 				match_pfx_len++;
@@ -1395,15 +1461,30 @@ static NOINLINE void input_tab(smallint *lastWasTab)
 		if (!matches)
 			goto ret; /* no matches at all */
 		/* Find common prefix */
-		chosen_match = xstrdup(matches[0]);
+# if ENABLE_PLATFORM_MINGW32
+		/* Any comparison involving a filename must be case-insensitive.
+		 * The chosen match should be case-sensitive, if possible */
+		for (unsigned i = 0; i < num_matches; ++i) {
+			if (is_case_sensitive(matches[i])) {
+				chosen_index = i;
+				chosen_sens = TRUE;
+				break;
+			}
+		}
+# endif
+		chosen_match = xstrdup(matches[chosen_index]);
 		for (cp = chosen_match; *cp; cp++) {
 			unsigned n;
-			for (n = 1; n < num_matches; n++) {
-# if !ENABLE_PLATFORM_MINGW32
-				if (matches[n][cp - chosen_match] != *cp) {
-# else
-				if (tolower(matches[n][cp - chosen_match]) != tolower(*cp)) {
+			for (n = first_match; n < num_matches; n++) {
+# if ENABLE_PLATFORM_MINGW32
+				if (!is_case_sensitive(matches[n]) || !chosen_sens) {
+					if (tolower(matches[n][cp - chosen_match]) !=
+							tolower(*cp)) {
+						goto stop;
+					}
+				} else
 # endif
+				if (matches[n][cp - chosen_match] != *cp) {
 					goto stop;
 				}
 			}
@@ -1489,14 +1570,6 @@ static NOINLINE void input_tab(smallint *lastWasTab)
 	free(chosen_match);
 	free(match_buf);
 }
-
-# if ENABLE_PLATFORM_MINGW32
-#  undef is_prefixed_with
-#  undef qsort_string_vector
-#  undef strcmp
-#  undef strncmp
-# endif
-
 #endif  /* FEATURE_TAB_COMPLETION */
 
 
@@ -1516,11 +1589,15 @@ line_input_t* FAST_FUNC new_line_input_t(int flags)
 
 unsigned FAST_FUNC size_from_HISTFILESIZE(const char *hp)
 {
+# if ENABLE_PLATFORM_MINGW32 && DEFAULT_HISTORY > 0 && DEFAULT_HISTORY <= MAX_HISTORY
+	int size = DEFAULT_HISTORY;
+# else
 	int size = MAX_HISTORY;
+# endif
 	if (hp) {
 		size = atoi(hp);
-		if (size <= 0)
-			return 1;
+		if (size < 0)
+			return 0;
 		if (size > MAX_HISTORY)
 			return MAX_HISTORY;
 	}
@@ -1614,18 +1691,21 @@ static void load_history(line_input_t *st_parm)
 	/* NB: do not trash old history if file can't be opened */
 
 	fp = fopen_for_read(st_parm->hist_file);
-	if (fp) {
-		/* clean up old history */
-		for (idx = st_parm->cnt_history; idx > 0;) {
-			idx--;
-			free(st_parm->history[idx]);
-			st_parm->history[idx] = NULL;
-		}
+	if (!fp)
+		return;
 
-		/* fill temp_h[], retaining only last MAX_HISTORY lines */
-		memset(temp_h, 0, sizeof(temp_h));
-		idx = 0;
-		st_parm->cnt_history_in_file = 0;
+	/* clean up old history */
+	for (idx = st_parm->cnt_history; idx > 0;) {
+		idx--;
+		free(st_parm->history[idx]);
+		st_parm->history[idx] = NULL;
+	}
+
+	/* fill temp_h[], retaining only last max_history lines */
+	memset(temp_h, 0, sizeof(temp_h));
+	idx = 0;
+	st_parm->cnt_history_in_file = 0;
+	if (st_parm->max_history != 0) {
 		while ((line = xmalloc_fgetline(fp)) != NULL) {
 			if (line[0] == '\0') {
 				free(line);
@@ -1638,51 +1718,61 @@ static void load_history(line_input_t *st_parm)
 			if (idx == st_parm->max_history)
 				idx = 0;
 		}
-		fclose(fp);
+	}
+	fclose(fp);
 
-		/* find first non-NULL temp_h[], if any */
-		if (st_parm->cnt_history_in_file) {
-			while (temp_h[idx] == NULL) {
-				idx++;
-				if (idx == st_parm->max_history)
-					idx = 0;
-			}
-		}
-
-		/* copy temp_h[] to st_parm->history[] */
-		for (i = 0; i < st_parm->max_history;) {
-			line = temp_h[idx];
-			if (!line)
-				break;
+	/* find first non-NULL temp_h[], if any */
+	if (st_parm->cnt_history_in_file != 0) {
+		while (temp_h[idx] == NULL) {
 			idx++;
 			if (idx == st_parm->max_history)
 				idx = 0;
-			line_len = strlen(line);
-			if (line_len >= MAX_LINELEN)
-				line[MAX_LINELEN-1] = '\0';
-			st_parm->history[i++] = line;
 		}
-		st_parm->cnt_history = i;
-		if (ENABLE_FEATURE_EDITING_SAVE_ON_EXIT)
-			st_parm->cnt_history_in_file = i;
 	}
+
+	/* copy temp_h[] to st_parm->history[] */
+	for (i = 0; i < st_parm->max_history;) {
+		line = temp_h[idx];
+		if (!line)
+			break;
+		idx++;
+		if (idx == st_parm->max_history)
+			idx = 0;
+		line_len = strlen(line);
+		if (line_len >= MAX_LINELEN)
+			line[MAX_LINELEN-1] = '\0';
+		st_parm->history[i++] = line;
+	}
+	st_parm->cnt_history = i;
+	if (ENABLE_FEATURE_EDITING_SAVE_ON_EXIT)
+		st_parm->cnt_history_in_file = i;
 }
 
 #  if ENABLE_FEATURE_EDITING_SAVE_ON_EXIT
-void save_history(line_input_t *st)
+void FAST_FUNC save_history(line_input_t *st)
 {
 	FILE *fp;
 
-	if (!st || !st->hist_file)
+	/* bash compat: HISTFILE="" disables history saving */
+	if (!st || !st->hist_file || !st->hist_file[0])
 		return;
 	if (st->cnt_history <= st->cnt_history_in_file)
-		return;
+		return; /* no new entries were added */
+	/* note: if st->max_history is 0, we do not abort: we truncate the history to 0 lines */
 
-	fp = fopen(st->hist_file, "a");
+	fp = fopen(st->hist_file, (st->max_history == 0 ? "w" : "a"));
 	if (fp) {
 		int i, fd;
 		char *new_name;
 		line_input_t *st_temp;
+
+		/* max_history==0 needs special-casing in general code,
+		 * just handle it in a simpler way: */
+		if (st->max_history == 0) {
+			/* fopen("w") already truncated it */
+			fclose(fp);
+			return;
+		}
 
 		for (i = st->cnt_history_in_file; i < st->cnt_history; i++)
 			fprintf(fp, "%s\n", st->history[i]);
@@ -1693,6 +1783,8 @@ void save_history(line_input_t *st)
 		st_temp = new_line_input_t(st->flags);
 		st_temp->hist_file = st->hist_file;
 		st_temp->max_history = st->max_history;
+		/* load no more than max_history last lines */
+		/* (in unlikely case that file disappeared, st_temp gets empty history) */
 		load_history(st_temp);
 
 		/* write out temp file and replace hist_file atomically */
@@ -1716,13 +1808,13 @@ static void save_history(char *str)
 	int fd;
 	int len, len2;
 
-	if (!state->hist_file)
+	/* bash compat: HISTFILE="" disables history saving */
+	if (!state->hist_file || !state->hist_file[0])
 		return;
 
 	fd = open(state->hist_file, O_WRONLY | O_CREAT | O_APPEND, 0600);
 	if (fd < 0)
 		return;
-	xlseek(fd, 0, SEEK_END); /* paranoia */
 	len = strlen(str);
 	str[len] = '\n'; /* we (try to) do atomic write */
 	len2 = full_write(fd, str, len + 1);
@@ -1777,12 +1869,9 @@ static void remember_in_history(char *str)
 	if (str[0] == '\0')
 		return;
 	i = state->cnt_history;
-	/* Don't save dupes */
-	if (i && strcmp(state->history[i-1], str) == 0)
+	/* Don't save dups */
+	if (i != 0 && strcmp(state->history[i-1], str) == 0)
 		return;
-
-	free(state->history[state->max_history]); /* redundant, paranoia */
-	state->history[state->max_history] = NULL; /* redundant, paranoia */
 
 	/* If history[] is full, remove the oldest command */
 	/* we need to keep history[state->max_history] empty, hence >=, not > */
@@ -1796,7 +1885,7 @@ static void remember_in_history(char *str)
 			state->cnt_history_in_file--;
 # endif
 	}
-	/* i <= state->max_history-1 */
+	/* i < state->max_history */
 	state->history[i++] = xstrdup(str);
 	/* i <= state->max_history */
 	state->cur_history = i;
@@ -2017,7 +2106,7 @@ static void ask_terminal(void)
 	pfd.events = POLLIN;
 	if (safe_poll(&pfd, 1, 0) == 0) {
 		S.sent_ESC_br6n = 1;
-		fputs_stdout(ESC"[6n");
+		fputs(ESC"[6n", stderr);
 		fflush_all(); /* make terminal see it ASAP! */
 	}
 }
@@ -2213,7 +2302,13 @@ static void parse_and_put_prompt(const char *prmt_ptr)
 				case 'W': /* basename of cur dir */
 					if (!cwd_buf) {
 						const char *home;
+# if EDITING_HAS_sh_get_var
+						cwd_buf = state && state->sh_get_var
+							? xstrdup(state->sh_get_var("PWD"))
+							: xrealloc_getcwd_or_warn(NULL);
+# else
 						cwd_buf = xrealloc_getcwd_or_warn(NULL);
+# endif
 						if (!cwd_buf)
 							cwd_buf = (char *)bb_msg_unknown;
 						else if ((home = get_homedir_or_NULL()) != NULL && home[0]) {
@@ -2237,7 +2332,7 @@ static void parse_and_put_prompt(const char *prmt_ptr)
 					if (c == 'w')
 						break;
 					cp = strrchr(pbuf, '/');
-					if (cp)
+					if (cp && cp[1])
 						pbuf = (char*)cp + 1;
 					break;
 // bb_process_escape_sequence does this now:
@@ -2354,7 +2449,8 @@ static int lineedit_read_key(char *read_key_buffer, int timeout)
 		 * "\xff\n",pause,"ls\n" invalid and thus won't lose "ls".
 		 *
 		 * If LI_INTERRUPTIBLE, return -1 if got EINTR in poll()
-		 * inside read_key, or if bb_got_signal != 0 (IOW: if signal
+		 * inside read_key and bb_got_signal became != 0,
+		 * or if bb_got_signal != 0 (IOW: if signal
 		 * arrived before poll() is reached).
 		 *
 		 * Note: read_key sets errno to 0 on success.
@@ -2364,21 +2460,22 @@ static int lineedit_read_key(char *read_key_buffer, int timeout)
 				errno = EINTR;
 				return -1;
 			}
-//FIXME: still races here with signals, but small window to poll() inside read_key
 			IF_FEATURE_EDITING_WINCH(S.ok_to_redraw = 1;)
 			/* errno = 0; - read_key does this itself */
 			ic = read_key(STDIN_FILENO, read_key_buffer, timeout);
 			IF_FEATURE_EDITING_WINCH(S.ok_to_redraw = 0;)
 			if (errno != EINTR)
 				break;
+			/* It was EINTR. Repeat read_key() unless... */
 			if (state->flags & LI_INTERRUPTIBLE) {
-				/* LI_INTERRUPTIBLE bails out on EINTR,
-				 * but nothing really guarantees that bb_got_signal
-				 * is nonzero. Follow the least surprise principle:
+				/* LI_INTERRUPTIBLE bails out on EINTR
+				 * if bb_got_signal became nonzero.
+				 * (It may stay zero: for example, our SIGWINCH
+				 * handler does not set it. This is used for signals
+				 * which should not interrupt line editing).
 				 */
-				if (bb_got_signal == 0)
-					bb_got_signal = 255;
-				goto ret;
+				if (bb_got_signal != 0)
+					goto ret; /* will return -1 */
 			}
 		}
 
@@ -2630,7 +2727,7 @@ static void sigaction2(int sig, struct sigaction *act)
  */
 int FAST_FUNC read_line_input(line_input_t *st, const char *prompt, char *command, int maxsize)
 {
-	int len IF_NOT_PLATFORM_MINGW32(, n);
+	int len, n;
 	int timeout;
 #if ENABLE_FEATURE_TAB_COMPLETION
 	smallint lastWasTab = 0;
@@ -2640,9 +2737,7 @@ int FAST_FUNC read_line_input(line_input_t *st, const char *prompt, char *comman
 	smallint vi_cmdmode = 0;
 #endif
 	struct termios initial_settings;
-#if !ENABLE_PLATFORM_MINGW32
 	struct termios new_settings;
-#endif
 	char read_key_buffer[KEYCODE_BUFFER_SIZE];
 
 	INIT_S();
@@ -2651,15 +2746,13 @@ int FAST_FUNC read_line_input(line_input_t *st, const char *prompt, char *comman
 	cmdedit_termw = 80;
 	IF_FEATURE_EDITING_VI(delptr = delbuf;)
 
-#if !ENABLE_PLATFORM_MINGW32
 	n = get_termios_and_make_raw(STDIN_FILENO, &new_settings, &initial_settings, 0
 		| TERMIOS_CLEAR_ISIG /* turn off INTR (ctrl-C), QUIT, SUSP */
 	);
+#if !ENABLE_PLATFORM_MINGW32
 	if (n != 0 || (initial_settings.c_lflag & (ECHO|ICANON)) == ICANON) {
 #else
-	initial_settings.c_cc[VINTR] = CTRL('C');
-	initial_settings.c_cc[VEOF] = CTRL('D');
-	if (!isatty(0) || !isatty(1)) {
+	if (n != 0 || !isatty(0)) {
 #endif
 		/* Happens when e.g. stty -echo was run before.
 		 * But if ICANON is not set, we don't come here.
@@ -2670,8 +2763,12 @@ int FAST_FUNC read_line_input(line_input_t *st, const char *prompt, char *comman
 		fflush_all();
 		if (fgets(command, maxsize, stdin) == NULL)
 			len = -1; /* EOF or error */
-		else
+		else {
 			len = strlen(command);
+#if ENABLE_PLATFORM_MINGW32
+			len = remove_cr(command, len);
+#endif
+		}
 		DEINIT_S();
 		return len;
 	}
@@ -2712,9 +2809,7 @@ int FAST_FUNC read_line_input(line_input_t *st, const char *prompt, char *comman
 #endif
 #define command command_must_not_be_used
 
-#if !ENABLE_PLATFORM_MINGW32
 	tcsetattr_stdin_TCSANOW(&new_settings);
-#endif
 
 #if 0
 	for (i = 0; i <= state->max_history; i++)
@@ -2824,7 +2919,11 @@ int FAST_FUNC read_line_input(line_input_t *st, const char *prompt, char *comman
 #if ENABLE_PLATFORM_MINGW32
 		case CTRL('Z'):
 			command_ps[command_len] = '\0';
+		#if ENABLE_UNICODE_SUPPORT
+			bs_to_slash_u(command_ps);
+		#else
 			bs_to_slash(command_ps);
+		#endif
 			redraw(cmdedit_y, 0);
 			break;
 #endif
@@ -2832,13 +2931,13 @@ int FAST_FUNC read_line_input(line_input_t *st, const char *prompt, char *comman
 			/* Control-k -- clear to end of line */
 			command_ps[cursor] = BB_NUL;
 			command_len = cursor;
-			printf(SEQ_CLEAR_TILL_END_OF_SCREEN);
+			fputs(SEQ_CLEAR_TILL_END_OF_SCREEN, stderr);
 			break;
 		case CTRL('L'):
 		vi_case(CTRL('L')|VI_CMDMODE_BIT:)
 			/* Control-l -- clear screen */
 			/* cursor to top,left; clear to the end of screen */
-			printf(ESC"[H" ESC"[J");
+			fputs(ESC"[H" ESC"[J", stderr);
 			draw_full(command_len - cursor);
 			break;
 #if MAX_HISTORY > 0
@@ -3025,8 +3124,8 @@ int FAST_FUNC read_line_input(line_input_t *st, const char *prompt, char *comman
 				beep();
 			} else {
 				command_ps[cursor] = ic;
-				bb_putchar(ic);
-				bb_putchar('\b');
+				bb_putchar_stderr(ic);
+				bb_putchar_stderr('\b');
 			}
 			break;
 		case '\x1b': /* ESC */
@@ -3082,6 +3181,10 @@ int FAST_FUNC read_line_input(line_input_t *st, const char *prompt, char *comman
 			 && ic_raw == initial_settings.c_cc[VINTR]
 			) {
 				/* Ctrl-C (usually) - stop gathering input */
+#if ENABLE_PLATFORM_MINGW32
+				if (state->flags & IGNORE_CTRL_C)
+					break;
+#endif
 				command_len = 0;
 				break_out = -1; /* "do not append '\n'" */
 				break;
@@ -3201,10 +3304,8 @@ int FAST_FUNC read_line_input(line_input_t *st, const char *prompt, char *comman
 	free_tab_completion_data();
 #endif
 
-#if !ENABLE_PLATFORM_MINGW32
 	/* restore initial_settings */
 	tcsetattr_stdin_TCSANOW(&initial_settings);
-#endif
 #if ENABLE_FEATURE_EDITING_WINCH
 	/* restore SIGWINCH handler */
 	sigaction_set(SIGWINCH, &S.SIGWINCH_handler);
@@ -3222,7 +3323,10 @@ int FAST_FUNC read_line_input(line_input_t *st, const char *prompt, char *comman
 #undef read_line_input
 int FAST_FUNC read_line_input(const char* prompt, char* command, int maxsize)
 {
-	fputs_stdout(prompt);
+	/* https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html
+	 * says that shells must write $PSn to stderr, not stdout.
+	 */
+	fputs(prompt, stderr);
 	fflush_all();
 	if (!fgets(command, maxsize, stdin))
 		return -1;

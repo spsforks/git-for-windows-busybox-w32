@@ -62,7 +62,7 @@
 //usage:       " [-ti"IF_FEATURE_CPIO_O("o")"]" IF_FEATURE_CPIO_P(" [-p DIR]")
 //usage:       " [EXTR_FILE]..."
 //usage:#define cpio_full_usage "\n\n"
-//usage:       "Extract (-i) or list (-t) files from a cpio archive"
+//usage:       "Extract (-i) or list (-t) files from a cpio archive on stdin"
 //usage:	IF_FEATURE_CPIO_O(", or"
 //usage:     "\ntake file list from stdin and create an archive (-o)"
 //usage:                IF_FEATURE_CPIO_P(" or copy files (-p)")
@@ -354,6 +354,12 @@ static NOINLINE int cpio_o(void)
 #endif
 #endif
 
+		if (sizeof(st.st_size) > 4
+		 && st.st_size > (off_t)0xffffffff
+		) {
+			bb_error_msg_and_die("error: file '%s' is larger than 4GB", name);
+		}
+
 		bytes += printf("070701"
 				"%08X%08X%08X%08X%08X%08X%08X"
 				"%08X%08X%08X%08X" /* GNU cpio uses uppercase hex */
@@ -425,6 +431,7 @@ int cpio_main(int argc UNUSED_PARAM, char **argv)
 #endif
 #endif
 		"owner\0"        Required_argument "R"
+		"file\0"         Required_argument "F"
 		"verbose\0"      No_argument       "v"
 		"null\0"         No_argument       "0"
 		"quiet\0"        No_argument       "\xff"
@@ -508,7 +515,6 @@ int cpio_main(int argc UNUSED_PARAM, char **argv)
 			goto dump;
 		}
 		/* parent */
-		USE_FOR_NOMMU(argv[-optind][0] &= 0x7f); /* undo fork_or_rexec() damage */
 		xchdir(*argv++);
 		close(pp.wr);
 		xmove_fd(pp.rd, STDIN_FILENO);

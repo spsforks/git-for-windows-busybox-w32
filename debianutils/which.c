@@ -6,18 +6,21 @@
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
 //config:config WHICH
-//config:	bool "which (3.8 kb)"
+//config:	bool "which (4 kb)"
 //config:	default y
 //config:	help
 //config:	which is used to find programs in your PATH and
 //config:	print out their pathnames.
 
-// NOTE: For WIN32 this applet is NOEXEC as alloc_system_drive() and
-//       find_executable() both allocate memory.  And find_executable()
-//       calls alloc_system_drive().
+// NOTE: For WIN32 this applet is NOEXEC as file_is_win32_exe() and
+//       find_executable() both allocate memory.
 
-//applet:IF_PLATFORM_MINGW32(IF_WHICH(APPLET_NOEXEC(which, which, BB_DIR_USR_BIN, BB_SUID_DROP, which)))
-//applet:IF_PLATFORM_POSIX(IF_WHICH(APPLET_NOFORK(which, which, BB_DIR_USR_BIN, BB_SUID_DROP, which)))
+//applet:IF_PLATFORM_MINGW32(
+//applet:IF_WHICH(APPLET_NOEXEC(which, which, BB_DIR_USR_BIN, BB_SUID_DROP, which))
+//applet:)
+//applet:IF_PLATFORM_POSIX(
+//applet:IF_WHICH(APPLET_NOFORK(which, which, BB_DIR_USR_BIN, BB_SUID_DROP, which))
+//applet:)
 
 //kbuild:lib-$(CONFIG_WHICH) += which.o
 
@@ -33,37 +36,21 @@
 
 #include "libbb.h"
 
-#if ENABLE_PLATFORM_MINGW32 && ENABLE_FEATURE_SH_STANDALONE
-enum {
-	OPT_a = (1 << 0),
-	OPT_s = (1 << 1)
-};
-#endif
-
 int which_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
 int which_main(int argc UNUSED_PARAM, char **argv)
 {
-	char *env_path;
+	const char *env_path;
 	int status = 0;
-	/* This sizeof(): bb_default_root_path is shorter than BB_PATH_ROOT_PATH */
-	char buf[sizeof(BB_PATH_ROOT_PATH)];
 #if ENABLE_PLATFORM_MINGW32 && ENABLE_FEATURE_SH_STANDALONE
-	int sh_standalone;
+	/* 'Which' in argv[0] indicates we were run from a standalone shell */
+	int sh_standalone = argv[0][0] == 'W';
 #endif
 
 	env_path = getenv("PATH");
 	if (!env_path)
-		/* env_path must be writable, and must not alloc, so... */
-		env_path = strcpy(buf, bb_default_root_path);
+		env_path = bb_default_root_path;
 
-#if ENABLE_PLATFORM_MINGW32 && ENABLE_FEATURE_SH_STANDALONE
-	/* '-s' option indicates we were run from a standalone shell */
-	getopt32(argv, "^" "as" "\0" "-1"/*at least one arg*/);
-	sh_standalone = option_mask32 & OPT_s;
-	option_mask32 &= ~OPT_s;
-#else
 	getopt32(argv, "^" "a" "\0" "-1"/*at least one arg*/);
-#endif
 	argv += optind;
 
 	do {
@@ -91,9 +78,9 @@ int which_main(int argc UNUSED_PARAM, char **argv)
 			}
 #else
 		if (has_path(*argv)) {
-			char *path = alloc_system_drive(*argv);
+			char *path = file_is_win32_exe(*argv);
 
-			if (add_win32_extension(path) || file_is_executable(path)) {
+			if (path) {
 				missing = 0;
 				puts(bs_to_slash(path));
 			}
@@ -107,14 +94,12 @@ int which_main(int argc UNUSED_PARAM, char **argv)
 # endif
 				{
 					argv[0] = (char *)name;
-					free(path);
 					goto try_PATH;
 				}
 			}
-			free(path);
 #endif
 		} else {
-			char *path;
+			const char *path;
 			char *p;
 
 #if ENABLE_PLATFORM_MINGW32

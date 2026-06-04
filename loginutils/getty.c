@@ -22,7 +22,7 @@
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
 //config:config GETTY
-//config:	bool "getty (10 kb)"
+//config:	bool "getty (11 kb)"
 //config:	default y
 //config:	select FEATURE_SYSLOG
 //config:	help
@@ -213,7 +213,7 @@ static void open_tty(void)
 	/* Set up new standard input, unless we are given an already opened port */
 	if (NOT_LONE_DASH(G.tty_name)) {
 		if (G.tty_name[0] != '/')
-			G.tty_name = xasprintf("/dev/%s", G.tty_name); /* will leak it */
+			G.tty_name = concat_path_file("/dev", G.tty_name); /* will leak it */
 
 		/* Open the tty as standard input */
 		debug("open(2)\n");
@@ -471,8 +471,10 @@ static char *get_logname(void)
 	do {
 		/* Write issue file and prompt */
 #ifdef ISSUE
-		if (!(option_mask32 & F_NOISSUE))
+		if (!(option_mask32 & F_NOISSUE)) {
+			puts("\r");  /* start a new line */
 			print_login_issue(G.issue, G.tty_name);
+		}
 #endif
 		print_login_prompt();
 

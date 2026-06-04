@@ -7,11 +7,11 @@
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
 #include "libbb.h"
-#if ENABLE_FEATURE_SYSLOG
+#if ENABLE_FEATURE_SYSLOG && ENABLE_PLATFORM_POSIX
 # include <syslog.h>
 #endif
 
-#if ENABLE_FEATURE_SYSLOG
+#if ENABLE_FEATURE_SYSLOG && ENABLE_PLATFORM_POSIX
 static smallint syslog_level = LOG_ERR;
 #endif
 smallint logmode = LOGMODE_STDIO;
@@ -25,9 +25,6 @@ void FAST_FUNC bb_verror_msg(const char *s, va_list p, const char* strerr)
 
 	if (!logmode)
 		return;
-
-	if (!s) /* nomsg[_and_die] uses NULL fmt */
-		s = ""; /* some libc don't like printf(NULL) */
 
 	applet_len = strlen(applet_name) + 2; /* "applet: " */
 	strerr_len = strerr ? strlen(strerr) : 0;
@@ -91,7 +88,7 @@ void FAST_FUNC bb_verror_msg(const char *s, va_list p, const char* strerr)
 		fflush_all();
 		full_write(STDERR_FILENO, msg, used);
 	}
-#if ENABLE_FEATURE_SYSLOG
+#if ENABLE_FEATURE_SYSLOG && ENABLE_PLATFORM_POSIX
 	if (logmode & LOGMODE_SYSLOG) {
 		syslog(syslog_level, "%s", msg + applet_len);
 	}
@@ -115,9 +112,6 @@ void FAST_FUNC bb_verror_msg(const char *s, va_list p, const char* strerr)
 
 	if (!logmode)
 		return;
-
-	if (!s) /* nomsg[_and_die] uses NULL fmt */
-		s = ""; /* some libc don't like printf(NULL) */
 
 	/* Prevent "derefing type-punned ptr will break aliasing rules" */
 	used = vasprintf((char**)(void*)msgptr, s, p);
@@ -152,7 +146,7 @@ void FAST_FUNC bb_verror_msg(const char *s, va_list p, const char* strerr)
 		fflush_all();
 		writev(STDERR_FILENO, iov, 3);
 	}
-# if ENABLE_FEATURE_SYSLOG
+# if ENABLE_FEATURE_SYSLOG && ENABLE_PLATFORM_POSIX
 	if (logmode & LOGMODE_SYSLOG) {
 		syslog(syslog_level, "%s", msgc);
 	}
@@ -162,7 +156,7 @@ void FAST_FUNC bb_verror_msg(const char *s, va_list p, const char* strerr)
 #endif
 
 
-void FAST_FUNC bb_error_msg_and_die(const char *s, ...)
+void bb_error_msg_and_die(const char *s, ...)
 {
 	va_list p;
 
@@ -172,7 +166,7 @@ void FAST_FUNC bb_error_msg_and_die(const char *s, ...)
 	xfunc_die();
 }
 
-void FAST_FUNC bb_error_msg(const char *s, ...)
+void bb_error_msg(const char *s, ...)
 {
 	va_list p;
 
@@ -181,7 +175,7 @@ void FAST_FUNC bb_error_msg(const char *s, ...)
 	va_end(p);
 }
 
-#if ENABLE_FEATURE_SYSLOG_INFO
+#if ENABLE_FEATURE_SYSLOG_INFO && ENABLE_PLATFORM_POSIX
 void FAST_FUNC bb_vinfo_msg(const char *s, va_list p)
 {
 	syslog_level = LOG_INFO;
@@ -189,7 +183,7 @@ void FAST_FUNC bb_vinfo_msg(const char *s, va_list p)
 	syslog_level = LOG_ERR;
 }
 
-void FAST_FUNC bb_info_msg(const char *s, ...)
+void bb_info_msg(const char *s, ...)
 {
 	va_list p;
 

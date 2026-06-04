@@ -306,7 +306,7 @@ static struct config_entry_struct *last_config = NULL;
 static char *mount_point = NULL;
 static volatile int caught_signal = FALSE;
 static volatile int caught_sighup = FALSE;
-static struct initial_symlink_struct {
+static const struct initial_symlink_struct {
 	const char *dest;
 	const char *name;
 } initial_symlinks[] = {
@@ -354,10 +354,10 @@ static const char bb_msg_variable_not_found[] ALIGN1 = "variable: %s not found";
 #define simple_info_logger(p, msg)
 #define msg_logger(p, fmt, args...)
 #define simple_msg_logger(p, msg)
-#define msg_logger_and_die(p, fmt, args...)           exit(EXIT_FAILURE)
-#define simple_msg_logger_and_die(p, msg)             exit(EXIT_FAILURE)
+#define msg_logger_and_die(p, fmt, args...)           exit_FAILURE()
+#define simple_msg_logger_and_die(p, msg)             exit_FAILURE()
 #define error_logger(p, fmt, args...)
-#define error_logger_and_die(p, fmt, args...)         exit(EXIT_FAILURE)
+#define error_logger_and_die(p, fmt, args...)         exit_FAILURE()
 #endif
 
 static void safe_memcpy(char *dest, const char *src, int len)
@@ -413,7 +413,7 @@ int devfsd_main(int argc, char **argv)
 	int fd, proto_rev, count;
 	unsigned long event_mask = 0;
 	struct sigaction new_action;
-	struct initial_symlink_struct *curr;
+	const struct initial_symlink_struct *curr;
 
 	if (argc < 2)
 		bb_show_usage();
@@ -962,7 +962,6 @@ static void action_compat(const struct devfsd_notify_struct *info, unsigned int 
 			dest_name = dest_buf;
 			compat_name = compat_buf;
 
-
 			/* 1 == scsi/generic  2 == scsi/disc 3 == scsi/cd 6 == ide/host/disc 7 == ide/host/cd */
 			if (i == 1 || i == 2 || i == 3 || i == 6 || i ==7)
 				sprintf(compat_buf, fmt[i], host, bus, target, lun);
@@ -976,7 +975,7 @@ static void action_compat(const struct devfsd_notify_struct *info, unsigned int 
 				rewind_ = info->devname[info->namelen - 1];
 				if (rewind_ != 'n')
 					rewind_ = '\0';
-				mode=0;
+				mode = 0;
 				if (ptr[2] ==  'l' /*108*/ || ptr[2] == 'm'/*109*/)
 					mode = ptr[2] - 107; /* 1 or 2 */
 				if (ptr[2] ==  'a')
@@ -1072,8 +1071,8 @@ static int copy_inode(const char *destpath, const struct stat *dest_stat,
 			if (fd < 0)
 				break;
 			un_addr.sun_family = AF_UNIX;
-			snprintf(un_addr.sun_path, sizeof(un_addr.sun_path), "%s", destpath);
-			val = bind(fd, (struct sockaddr *) &un_addr, (int) sizeof un_addr);
+			strncpy(un_addr.sun_path, destpath, sizeof(un_addr.sun_path));
+			val = bind(fd, (struct sockaddr *) &un_addr, (int)sizeof(un_addr));
 			close(fd);
 			if (val != 0 || chmod(destpath, new_mode & ~S_IFMT) != 0)
 				break;
@@ -1595,11 +1594,11 @@ static char *write_old_sd_name(char *buffer,
 		return buffer;
 	}
 	if ((major > 64) && (major < 72)) {
-		disc_index = ((major - 64) << 4) +(minor >> 4);
+		disc_index = ((major - 64) << 4) + (minor >> 4);
 		if (disc_index < 26)
 			sprintf(buffer, "sd%c%s", 'a' + disc_index, part);
 		else
-			sprintf(buffer, "sd%c%c%s", 'a' +(disc_index / 26) - 1, 'a' + disc_index % 26, part);
+			sprintf(buffer, "sd%c%c%s", 'a' + (disc_index / 26) - 1, 'a' + disc_index % 26, part);
 		return buffer;
 	}
 	return NULL;

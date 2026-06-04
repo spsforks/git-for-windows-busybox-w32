@@ -14,7 +14,7 @@
 #define SANITY_CHECKS 1
 
 //config:config BC
-//config:	bool "bc (45 kb)"
+//config:	bool "bc (38 kb)"
 //config:	default y
 //config:	select FEATURE_DC_BIG
 //config:	help
@@ -38,7 +38,7 @@
 //config:	  5) "read()" accepts expressions, not only numeric literals.
 //config:
 //config:config DC
-//config:	bool "dc (36 kb)"
+//config:	bool "dc (29 kb)"
 //config:	default y
 //config:	help
 //config:	dc is a reverse-polish notation command-line calculator which
@@ -203,6 +203,9 @@
 
 #include "libbb.h"
 #include "common_bufsiz.h"
+#if ENABLE_PLATFORM_MINGW32
+# include "BB_VER.h"
+#endif
 
 #if !ENABLE_BC && !ENABLE_FEATURE_DC_BIG
 # include "dc.c"
@@ -2892,6 +2895,8 @@ static char peek_inbuf(void)
 	) {
 		xc_read_line(&G.input_buffer, G.prs.lex_input_fp);
 		G.prs.lex_inbuf = G.input_buffer.v;
+		// lex_next_at may point to now-freed data, update it:
+		G.prs.lex_next_at = G.prs.lex_inbuf;
 		if (G.input_buffer.len <= 1) // on EOF, len is 1 (NUL byte)
 			G.prs.lex_input_fp = NULL;
 	}
@@ -3103,7 +3108,7 @@ static BC_STATUS zbc_lex_identifier(void)
 			continue;
  match:
 		// buf starts with keyword bc_lex_kws[i]
-		if (isalnum(buf[j]) || buf[j]=='_')
+		if (isalnum(buf[j]) || buf[j] == '_')
 			continue; // "ifz" does not match "if" keyword, "if." does
 		p->lex = BC_LEX_KEY_1st_keyword + i;
 		if (!keyword_is_POSIX(i)) {
@@ -5523,7 +5528,7 @@ static void xc_program_printString(const char *str)
 		char c = *str++;
 		if (c == '\\') {
 			static const char esc[] ALIGN1 = "nabfrt""e\\";
-			char *n;
+			const char *n;
 
 			c = *str++;
 			n = strchr(esc, c); // note: if c is NUL, n = \0 at end of esc

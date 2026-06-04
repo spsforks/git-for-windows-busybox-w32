@@ -1,6 +1,7 @@
 #include "libbb.h"
 /* After libbb.h, since it needs sys/types.h on some systems */
 #include <sys/utsname.h>
+#include "BB_VER.h"
 
 int uname(struct utsname *name)
 {
@@ -34,6 +35,16 @@ int uname(struct utsname *name)
 			name->machine[1] = '3';
 		}
 		break;
+#if defined(PROCESSOR_ARCHITECTURE_ARM)
+	case PROCESSOR_ARCHITECTURE_ARM:
+		strcpy(name->machine, "armv7");
+		break;
+#endif
+#if defined(PROCESSOR_ARCHITECTURE_ARM64)
+	case PROCESSOR_ARCHITECTURE_ARM64:
+		strcpy(name->machine, "aarch64");
+		break;
+#endif
 	default:
 		strcpy(name->machine, unk);
 		break;

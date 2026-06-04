@@ -1681,25 +1681,26 @@ static void process_file(iconv_t cd, FILE *in, FILE *out)
 	char outbuf[BUFSIZ];
 	const char *pin;
 	char *pout;
-	size_t inbytesleft = 0;
+	size_t inbytesleft;
 	size_t outbytesleft;
 	size_t rest = 0;
 	size_t r;
 
-	while ((!feof(in) &&
-			(inbytesleft=fread(inbuf+rest, 1, sizeof(inbuf)-rest, in)) != 0)
+	while ((inbytesleft=fread(inbuf+rest, 1, sizeof(inbuf)-rest, in)) != 0
 				|| rest != 0) {
 		inbytesleft += rest;
 		pin = inbuf;
 		pout = outbuf;
 		outbytesleft = sizeof(outbuf);
 		r = iconv(cd, &pin, &inbytesleft, &pout, &outbytesleft);
+		fwrite(outbuf, 1, sizeof(outbuf) - outbytesleft, out);
 		if (r == (size_t)(-1) && errno != E2BIG &&
 				(errno != EINVAL || feof(in)))
 			bb_perror_msg_and_die("conversion error");
-		fwrite(outbuf, 1, sizeof(outbuf) - outbytesleft, out);
 		memmove(inbuf, pin, inbytesleft);
 		rest = inbytesleft;
+		if (rest == 0 && feof(in))
+			break;
 	}
 	pout = outbuf;
 	outbytesleft = sizeof(outbuf);
@@ -1721,6 +1722,7 @@ int iconv_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
 int iconv_main(int argc, char **argv)
 {
 	const char *fromcode = "", *tocode = "", *outfile;
+	char *tmpname = NULL;
 	int i, opt;
 	iconv_t cd;
 	FILE *in;
@@ -1737,8 +1739,11 @@ int iconv_main(int argc, char **argv)
 		return 0;
 	}
 
-	if (opt & OPT_o)
-		out = xfopen(outfile, "wb");
+	if (opt & OPT_o) {
+		tmpname = xasprintf("%sXXXXXX", outfile);
+		mktemp(tmpname);
+		out = xfopen(tmpname, "wb");
+	}
 
 	if (opt & OPT_c)
 		tocode = xasprintf("%s//IGNORE", tocode);
@@ -1757,6 +1762,11 @@ int iconv_main(int argc, char **argv)
 			in = xfopen(argv[optind], "rb");
 		process_file(cd, in, out);
 		fclose(in);
+	}
+
+	if (tmpname) {
+		fclose(out);
+		xrename(tmpname, outfile);
 	}
 
 	if (ENABLE_FEATURE_CLEAN_UP)

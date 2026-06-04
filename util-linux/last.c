@@ -7,7 +7,7 @@
  * Licensed under GPLv2, see file LICENSE in this source tree.
  */
 //config:config LAST
-//config:	bool "last (6.1 kb)"
+//config:	bool "last (7.4 kb)"
 //config:	default y
 //config:	depends on FEATURE_WTMP
 //config:	help
@@ -157,7 +157,7 @@ int last_main(int argc UNUSED_PARAM, char **argv UNUSED_PARAM)
 			ut.ut_user, ut.ut_line, ut.ut_host, ctime(&t_tmp) + 4);
  next:
 		pos -= sizeof(ut);
-		if (pos <= 0)
+		if (pos < 0)
 			break; /* done. */
 		xlseek(file, pos, SEEK_SET);
 	}

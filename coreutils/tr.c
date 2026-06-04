@@ -19,7 +19,7 @@
  * TODO: graph, print
  */
 //config:config TR
-//config:	bool "tr (5.1 kb)"
+//config:	bool "tr (5.3 kb)"
 //config:	default y
 //config:	help
 //config:	tr is used to squeeze, and/or delete characters from standard
@@ -61,6 +61,9 @@
 //usage:       "hello world\n"
 
 #include "libbb.h"
+#if ENABLE_PLATFORM_MINGW32
+  #include "actype.h"
+#endif
 
 enum {
 	ASCII = 256,
@@ -117,6 +120,13 @@ static unsigned expand(char *arg, char **buffer_p)
 			arg++;
 			z = arg;
 			ac = bb_process_escape_sequence(&z);
+#if ENABLE_PLATFORM_MINGW32
+			if (ac == '\\' && *z == '-') {
+				/* An escaped dash isn't a range, don't fall through */
+				buffer[pos++] = *z;
+				continue;
+			}
+#endif
 			arg = (char *)z;
 			arg--;
 			*arg = ac;
@@ -150,6 +160,17 @@ static unsigned expand(char *arg, char **buffer_p)
 			i = (unsigned char) *arg++;
 			/* "[xyz...". i=x, arg points to y */
 			if (ENABLE_FEATURE_TR_CLASSES && i == ':') { /* [:class:] */
+#if ENABLE_PLATFORM_MINGW32
+				int len;
+				actype_t t = actail(arg, &len);
+				if (!t)
+					goto skip_bracket;
+
+				arg += len;
+				for (i = '\0'; i < ASCII; ++i)
+					if (isactype_not0(i, t))
+						buffer[pos++] = i;
+#else
 #define CLO ":]\0"
 				static const char classes[] ALIGN1 =
 					"alpha"CLO "alnum"CLO "digit"CLO
@@ -222,6 +243,7 @@ static unsigned expand(char *arg, char **buffer_p)
 					}
 					pos += 6;
 				}
+#endif /* ! ENABLE_PLATFORM_MINGW32 */
 				continue;
 			}
 			/* "[xyz...", i=x, arg points to y */
@@ -299,7 +321,7 @@ int tr_main(int argc UNUSED_PARAM, char **argv)
 	 */
 
 	/* '+': stop at first non-option */
-	opts = getopt32(argv, "^+" "Ccds" "\0" "-1");
+	opts = getopt32(argv, "^+" "Ccds" "\0" "-1:?2");
 	argv += optind;
 
 	str1_length = expand(*argv++, &str1);

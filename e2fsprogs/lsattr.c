@@ -10,7 +10,7 @@
  * Public License
  */
 //config:config LSATTR
-//config:	bool "lsattr (5.5 kb)"
+//config:	bool "lsattr (5.7 kb)"
 //config:	default y
 //config:	help
 //config:	lsattr lists the file attributes on a second extended file system.
@@ -47,6 +47,7 @@
 //usage:     "\n\nAttributes:\n"
 //usage:     "\n	j	Junction"
 //usage:     "\n	l	Symbolic link"
+//usage:     "\n	A	App exec link"
 //usage:     "\n	R	Reparse point"
 //usage:     "\n	o	Offline"
 //usage:     "\n	e	Encrypted"

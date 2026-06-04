@@ -25,7 +25,7 @@
    "Minimalized" for busybox by Alain Knaff
 */
 //config:config LZOP
-//config:	bool "lzop (12 kb)"
+//config:	bool "lzop (13 kb)"
 //config:	default y
 //config:	help
 //config:	Lzop compression/decompresion.
@@ -207,7 +207,6 @@ static NOINLINE int lzo1x_optimize(uint8_t *in, unsigned in_len,
 		*op++ = *m_pos++;
 		lit = 0;
 		goto match_done;
-
 
 		/* handle matches */
 		do {

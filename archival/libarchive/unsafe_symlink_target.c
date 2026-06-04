@@ -10,18 +10,26 @@ void FAST_FUNC create_or_remember_link(llist_t **link_placeholders,
 		const char *linkname,
 		int hard_link)
 {
+#if ENABLE_PLATFORM_MINGW32
+	/* defer reporting error if symlink(2) fails on Windows */
+	if (hard_link || target[0] == '/' || strstr(target, "..") ||
+			symlink(target, linkname) != 0) {
+#else
 	if (hard_link || target[0] == '/' || strstr(target, "..")) {
+#endif
 		llist_add_to_end(link_placeholders,
 			xasprintf("%c%s%c%s", hard_link, linkname, '\0', target)
 		);
 		return;
 	}
+#if !ENABLE_PLATFORM_MINGW32
 	if (symlink(target, linkname) != 0) {
 		/* shared message */
 		bb_perror_msg_and_die("can't create %slink '%s' to '%s'",
 			"sym", linkname, target
 		);
 	}
+#endif
 }
 
 void FAST_FUNC create_links_from_list(llist_t *list)
@@ -36,6 +44,7 @@ void FAST_FUNC create_links_from_list(llist_t *list)
 				*list->data ? "hard" : "sym",
 				list->data + 1, target
 			);
+			/* Note: GNU tar 1.34 errors out only _after_ all links are (attempted to be) created */
 		}
 		list = list->link;
 	}

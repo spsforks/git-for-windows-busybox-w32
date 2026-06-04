@@ -8,7 +8,7 @@
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
 //config:config MODPROBE
-//config:	bool "modprobe (28 kb)"
+//config:	bool "modprobe (27 kb)"
 //config:	default y
 //config:	help
 //config:	Handle the loading of modules, and their dependencies on a high
@@ -579,7 +579,7 @@ int modprobe_main(int argc UNUSED_PARAM, char **argv)
 		parser_t *p = config_open2(CONFIG_DEFAULT_DEPMOD_FILE, xfopen_for_read);
 
 		for (i = 0; argv[i]; i++)
-			replace(argv[i], '-', '_');
+			replace_char(argv[i], '-', '_');
 
 		while (config_read(p, tokens, 2, 1, "# \t", PARSE_NORMAL)) {
 			colon = last_char_is(tokens[0], ':');

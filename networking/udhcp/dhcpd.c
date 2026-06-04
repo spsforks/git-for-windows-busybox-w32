@@ -575,29 +575,51 @@ static void send_packet_to_client(struct dhcp_packet *dhcp_pkt, int force_broadc
 	const uint8_t *chaddr;
 	uint32_t ciaddr;
 
-	// Was:
+	// Logic:
 	//if (force_broadcast) { /* broadcast */ }
 	//else if (dhcp_pkt->ciaddr) { /* unicast to dhcp_pkt->ciaddr */ }
+	// ^^^ dhcp_pkt->ciaddr comes from client's request packet.
+	// We expect such clients to have an UDP socket listening on that IP.
 	//else if (dhcp_pkt->flags & htons(BROADCAST_FLAG)) { /* broadcast */ }
 	//else { /* unicast to dhcp_pkt->yiaddr */ }
-	// But this is wrong: yiaddr is _our_ idea what client's IP is
-	// (for example, from lease file). Client may not know that,
-	// and may not have UDP socket listening on that IP!
-	// We should never unicast to dhcp_pkt->yiaddr!
-	// dhcp_pkt->ciaddr, OTOH, comes from client's request packet,
-	// and can be used.
+	// ^^^ The last case is confusing, but *should* work.
+	// It's a case where client have sent a DISCOVER
+	// and does not have a kernel UDP socket listening on the IP
+	// we are offering in yiaddr (it does not know the IP yet)!
+	// This *should* work because client *should* listen on a raw socket
+	// instead at this time (IOW: it should examine ALL IPv4 packets
+	// "by hand", not relying on kernel's UDP stack.)
 
-	if (force_broadcast
-	 || (dhcp_pkt->flags & htons(BROADCAST_FLAG))
-	 || dhcp_pkt->ciaddr == 0
+	chaddr = dhcp_pkt->chaddr;
+
+	if (dhcp_pkt->ciaddr == 0
+	 || force_broadcast /* sending DHCPNAK pkt? */
 	) {
-		log1s("broadcasting packet to client");
-		ciaddr = INADDR_BROADCAST;
-		chaddr = MAC_BCAST_ADDR;
+		if (dhcp_pkt->flags & htons(BROADCAST_FLAG)
+		 || force_broadcast /* sending DHCPNAK pkt? */
+		) {
+// RFC 2131:
+// If 'giaddr' is zero and 'ciaddr' is zero, and the broadcast bit is
+// set, then the server broadcasts DHCPOFFER and DHCPACK messages to
+// 0xffffffff. ...
+// In all cases, when 'giaddr' is zero, the server broadcasts any DHCPNAK
+// messages to 0xffffffff.
+			ciaddr = INADDR_BROADCAST;
+			chaddr = MAC_BCAST_ADDR;
+			log1s("broadcasting packet to client");
+		} else {
+// If the broadcast bit is not set and 'giaddr' is zero and
+// 'ciaddr' is zero, then the server unicasts DHCPOFFER and DHCPACK
+// messages to the client's hardware address and 'yiaddr' address.
+			ciaddr = dhcp_pkt->yiaddr;
+			log1("unicasting packet to client %ciaddr", 'y');
+		}
 	} else {
-		log1s("unicasting packet to client ciaddr");
+// If the 'giaddr'
+// field is zero and the 'ciaddr' field is nonzero, then the server
+// unicasts DHCPOFFER and DHCPACK messages to the address in 'ciaddr'.
 		ciaddr = dhcp_pkt->ciaddr;
-		chaddr = dhcp_pkt->chaddr;
+		log1("unicasting packet to client %ciaddr", 'c');
 	}
 
 	udhcp_send_raw_packet(dhcp_pkt,
@@ -624,6 +646,10 @@ static void send_packet_to_relay(struct dhcp_packet *dhcp_pkt)
 static void send_packet(struct dhcp_packet *dhcp_pkt, int force_broadcast)
 {
 	if (dhcp_pkt->gateway_nip)
+// RFC 2131:
+// If the 'giaddr' field in a DHCP message from a client is non-zero,
+// the server sends any return messages to the 'DHCP server' port on the
+// BOOTP relay agent whose address appears in 'giaddr'.
 		send_packet_to_relay(dhcp_pkt);
 	else
 		send_packet_to_client(dhcp_pkt, force_broadcast);
@@ -649,7 +675,8 @@ static void init_packet(struct dhcp_packet *packet, struct dhcp_packet *oldpacke
 	packet->flags = oldpacket->flags;
 	packet->gateway_nip = oldpacket->gateway_nip;
 	packet->ciaddr = oldpacket->ciaddr;
-	udhcp_add_simple_option(packet, DHCP_SERVER_ID, server_data.server_nip);
+	IF_FEATURE_UDHCPD_BOOTP(if (type != MSGTYPE_BOOTP))
+		udhcp_add_simple_option(packet, DHCP_SERVER_ID, server_data.server_nip);
 }
 
 /* Fill options field, siaddr_nip, and sname and boot_file fields.
@@ -725,7 +752,12 @@ static uint32_t select_lease_time(struct dhcp_packet *packet)
 
 /* We got a DHCP DISCOVER. Send an OFFER. */
 /* NOINLINE: limit stack usage in caller */
-static NOINLINE void send_offer(struct dhcp_packet *oldpacket,
+#if !ENABLE_FEATURE_UDHCPD_BOOTP
+#define send_offer(is_dhcp_client, ...) \
+	send_offer(__VA_ARGS__)
+#endif
+static NOINLINE void send_offer(void *is_dhcp_client,
+		struct dhcp_packet *oldpacket,
 		uint32_t static_lease_nip,
 		struct dyn_lease *lease,
 		uint32_t requested_nip,
@@ -734,7 +766,12 @@ static NOINLINE void send_offer(struct dhcp_packet *oldpacket,
 	struct dhcp_packet packet;
 	uint32_t lease_time_sec;
 
+#if ENABLE_FEATURE_UDHCPD_BOOTP
+	init_packet(&packet, oldpacket, is_dhcp_client ? DHCPOFFER : MSGTYPE_BOOTP);
+#else
+	enum { is_dhcp_client = 1 };
 	init_packet(&packet, oldpacket, DHCPOFFER);
+#endif
 
 	/* If it is a static lease, use its IP */
 	packet.yiaddr = static_lease_nip;
@@ -784,9 +821,16 @@ static NOINLINE void send_offer(struct dhcp_packet *oldpacket,
 		}
 	}
 
-	lease_time_sec = select_lease_time(oldpacket);
-	udhcp_add_simple_option(&packet, DHCP_LEASE_TIME, htonl(lease_time_sec));
+	if (is_dhcp_client) {
+		lease_time_sec = select_lease_time(oldpacket);
+		udhcp_add_simple_option(&packet, DHCP_LEASE_TIME, htonl(lease_time_sec));
+	}
+/* TODO: pass "is_dhcp_client" to add_server_options(), avoid adding confusing options to BOOTP clients? */
 	add_server_options(&packet);
+	if (!is_dhcp_client && udhcp_end_option(packet.options) >= RFC1048_OPTIONS_BUFSIZE) {
+		bb_simple_error_msg("BOOTP reply too large, not sending");
+		return;
+	}
 
 	/* send_packet emits error message itself if it detects failure */
 	send_packet_verbose(&packet, "sending OFFER to %s");
@@ -1050,8 +1094,12 @@ int udhcpd_main(int argc UNUSED_PARAM, char **argv)
 			continue;
 		}
 		msg_type = udhcp_get_option(&packet, DHCP_MESSAGE_TYPE);
-		if (!msg_type || msg_type[0] < DHCP_MINTYPE || msg_type[0] > DHCP_MAXTYPE) {
-			bb_info_msg("no or bad message type option%s", ", ignoring packet");
+		if (
+			IF_FEATURE_UDHCPD_BOOTP( msg_type && )
+			IF_NOT_FEATURE_UDHCPD_BOOTP( !msg_type || )
+			(msg_type[0] < DHCP_MINTYPE || msg_type[0] > DHCP_MAXTYPE)
+		) {
+			bb_info_msg("bad message type option%s", ", ignoring packet");
 			continue;
 		}
 
@@ -1086,12 +1134,25 @@ int udhcpd_main(int argc UNUSED_PARAM, char **argv)
 			move_from_unaligned32(requested_nip, requested_ip_opt);
 		}
 
+#if ENABLE_FEATURE_UDHCPD_BOOTP
+		/* Handle old BOOTP clients */
+		if (!msg_type) {
+			log1("received %s", "BOOTP BOOTREQUEST");
+			if (!static_lease_nip) {
+				bb_info_msg("no static lease for BOOTP client%s", ", ignoring packet");
+				continue;
+			}
+			send_offer(msg_type, &packet, static_lease_nip, lease, requested_nip, arpping_ms);
+			continue;
+		}
+#endif
+
 		switch (msg_type[0]) {
 
 		case DHCPDISCOVER:
 			log1("received %s", "DISCOVER");
 
-			send_offer(&packet, static_lease_nip, lease, requested_nip, arpping_ms);
+			send_offer(msg_type, &packet, static_lease_nip, lease, requested_nip, arpping_ms);
 			break;
 
 		case DHCPREQUEST:

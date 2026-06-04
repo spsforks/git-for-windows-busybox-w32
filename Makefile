@@ -1,8 +1,12 @@
 VERSION = 1
-PATCHLEVEL = 36
+PATCHLEVEL = 38
 SUBLEVEL = 0
 EXTRAVERSION = .git
 NAME = Unnamed
+
+# Colon is used as a separator in makefiles.  Strip any drive prefix
+# from the current directory to avoid confusion.
+CURDIR := $(lastword $(subst :, ,$(CURDIR)))
 
 # *DOCUMENTATION*
 # To see a list of typical targets execute "make help"
@@ -192,6 +196,28 @@ ARCH ?= $(SUBARCH)
 # Architecture as present in compile.h
 UTS_MACHINE := $(ARCH)
 
+HOST_COMPILER ?=
+ifeq ($(HOST_COMPILER),)
+HOST_COMPILER := $(shell grep ^CONFIG_HOST_COMPILER= .config 2>/dev/null)
+HOST_COMPILER := $(subst CONFIG_HOST_COMPILER=,,$(HOST_COMPILER))
+HOST_COMPILER := $(subst ",,$(HOST_COMPILER))
+#")
+endif
+ifeq ($(HOST_COMPILER),)
+HOST_COMPILER := gcc
+endif
+
+CROSS_COMPILER ?=
+ifeq ($(CROSS_COMPILER),)
+CROSS_COMPILER := $(shell grep ^CONFIG_CROSS_COMPILER= .config 2>/dev/null)
+CROSS_COMPILER := $(subst CONFIG_CROSS_COMPILER=,,$(CROSS_COMPILER))
+CROSS_COMPILER := $(subst ",,$(CROSS_COMPILER))
+#")
+endif
+ifeq ($(CROSS_COMPILER),)
+CROSS_COMPILER := gcc
+endif
+
 # SHELL used by kbuild
 CONFIG_SHELL := $(shell if [ -x "$$BASH" ]; then echo $$BASH; \
 	  else if [ -x /bin/bash ]; then echo /bin/bash; \
@@ -260,8 +286,15 @@ endif
 
 # If the user is running make -s (silent mode), suppress echoing of
 # commands
+# make-4.0 (and later) keep single letter options in the 1st word of MAKEFLAGS.
 
-ifneq ($(findstring s,$(MAKEFLAGS)),)
+ifeq ($(filter 3.%,$(MAKE_VERSION)),)
+short-opts := $(firstword -$(MAKEFLAGS))
+else
+short-opts := $(filter-out --%,$(MAKEFLAGS))
+endif
+
+ifneq ($(findstring s,$(short-opts)),)
   quiet=silent_
 endif
 
@@ -271,7 +304,7 @@ export quiet Q KBUILD_VERBOSE
 # Look for make include files relative to root of kernel src
 MAKEFLAGS += --include-dir=$(srctree)
 
-HOSTCC  	= gcc
+HOSTCC  	= $(HOST_COMPILER)
 HOSTCXX  	= g++
 HOSTCFLAGS	:=
 HOSTCXXFLAGS	:=
@@ -289,7 +322,7 @@ MAKEFLAGS += -rR
 # Make variables (CC, etc...)
 
 AS		= $(CROSS_COMPILE)as
-CC		= $(CROSS_COMPILE)gcc
+CC		= $(CROSS_COMPILE)$(CROSS_COMPILER)
 LD		= $(CC) -nostdlib
 CPP		= $(CC) -E
 AR		= $(CROSS_COMPILE)ar
@@ -334,6 +367,36 @@ CPPFLAGS	:= $(CPPFLAGS)
 AFLAGS		:= $(AFLAGS)
 LDFLAGS		:= $(LDFLAGS)
 LDLIBS		:=
+
+CONFIG_PLATFORM_MINGW32 ?=
+ifeq ($(CONFIG_PLATFORM_MINGW32),)
+CONFIG_PLATFORM_MINGW32 := $(shell grep ^CONFIG_PLATFORM_MINGW32= .config 2>/dev/null)
+CONFIG_PLATFORM_MINGW32 := $(subst CONFIG_PLATFORM_MINGW32=,,$(CONFIG_PLATFORM_MINGW32))
+CONFIG_PLATFORM_MINGW32 := $(subst ",,$(CONFIG_PLATFORM_MINGW32))
+#")
+endif
+
+# Try various methods to get a more specific EXTRAVERSION, but only
+# for MINGW32 platform and if EXTRAVERSION is default '.git'
+ifeq ($(CONFIG_PLATFORM_MINGW32)$(EXTRAVERSION),y.git)
+# Ask git
+extraversion := $(shell cd $(srctree) && git describe --match FRP 2>/dev/null)
+ifeq ($(strip $(extraversion)),)
+# That didn't work, look for a .frp_describe file
+extraversion := $(shell grep '^FRP-' $(srctree)/.frp_describe 2>/dev/null)
+ifeq ($(strip $(extraversion)),)
+# That didn't work either, look at name of source directory
+e1 := $(shell basename $(srctree) | grep '^busybox-w32-FRP-')
+ifneq ($(strip $(e1)),)
+extraversion := $(subst busybox-w32-,,$(e1))
+endif
+endif
+endif
+
+ifneq ($(strip $(extraversion)),)
+EXTRAVERSION := .$(subst FRP,git,$(extraversion))
+endif
+endif
 
 # Read KERNELRELEASE from .kernelrelease (if it exists)
 KERNELRELEASE = $(shell cat .kernelrelease 2> /dev/null)
@@ -488,6 +551,7 @@ libs-y		:= \
 		findutils/ \
 		init/ \
 		libbb/ \
+		libbb/yescrypt/ \
 		libpwdgrp/ \
 		loginutils/ \
 		mailutils/ \
@@ -625,8 +689,12 @@ quiet_cmd_busybox__ ?= LINK    $@
       "$(core-y)" \
       "$(libs-y)" \
       "$(LDLIBS)" \
-      "$(CONFIG_EXTRA_LDLIBS)" \
+      $(CONFIG_EXTRA_LDLIBS) \
       && $(srctree)/scripts/generate_BUFSIZ.sh --post include/common_bufsiz.h
+# ^^^ note: CONFIG_xyz strings already have double quotes: their value
+# is '"LIB LIB2"', therefore $(CONFIG_EXTRA_LDLIBS) above must NOT be written
+# as "$(CONFIG_EXTRA_LDLIBS)", it would be passed as ""LIB LIB2"",
+# and LIB2 would end up in $9, not $8 (and lost or misinterpreted).
 
 # Generate System.map
 quiet_cmd_sysmap = SYSMAP
@@ -829,7 +897,7 @@ endif
 # prepare2 creates a makefile if using a separate output directory
 prepare2: prepare3 outputmakefile
 
-prepare1: prepare2 include/config/MARKER
+prepare1: prepare2 include/config/MARKER include/BB_VER.h
 ifneq ($(KBUILD_MODULES),)
 	$(Q)mkdir -p $(MODVERDIR)
 	$(Q)rm -f $(MODVERDIR)/*
@@ -892,6 +960,13 @@ define filechk_version.h
 	 echo '#define KERNEL_VERSION(a,b,c) (((a) << 16) + ((b) << 8) + (c))'; \
 	)
 endef
+
+define filechk_BB_VER.h
+	(echo \#define BB_VER \"$(KERNELRELEASE)\";)
+endef
+
+include/BB_VER.h: $(srctree)/Makefile .config .kernelrelease FORCE
+	$(call filechk,BB_VER.h)
 
 # ---------------------------------------------------------------------------
 
@@ -980,6 +1055,7 @@ endif # CONFIG_MODULES
 # Directories & files removed with 'make clean'
 CLEAN_DIRS  += $(MODVERDIR) _install 0_lib
 CLEAN_FILES +=	busybox$(EXEEXT) busybox_unstripped* busybox.links \
+		busybox*.suid busybox*.nosuid \
                 System.map .kernelrelease \
                 .tmp_kallsyms* .tmp_version .tmp_busybox* .tmp_System.map
 
@@ -987,6 +1063,7 @@ CLEAN_FILES +=	busybox$(EXEEXT) busybox_unstripped* busybox.links \
 MRPROPER_DIRS  += include/config include2
 MRPROPER_FILES += .config .config.old include/asm .version .old_version \
 		  include/NUM_APPLETS.h \
+		  include/BB_VER.h \
 		  include/common_bufsiz.h \
 		  include/autoconf.h \
 		  include/bbconfigopts.h \

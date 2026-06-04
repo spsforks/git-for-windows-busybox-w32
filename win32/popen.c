@@ -11,8 +11,8 @@ typedef struct {
 static pipe_data *pipes = NULL;
 static int num_pipes = 0;
 
-static int mingw_popen_internal(pipe_data *p, const char *cmd,
-					const char *mode, int fd0, pid_t *pid);
+static int mingw_popen_internal(pipe_data *p, const char *exe,
+					const char *cmd, const char *mode, int fd0, pid_t *pid);
 
 static int mingw_pipe(pipe_data *p, int bidi)
 {
@@ -115,10 +115,7 @@ FILE *mingw_popen(const char *cmd, const char *mode)
 	pipe_data *p;
 	FILE *fptr = NULL;
 	int fd;
-	int len, count;
-	char *cmd_buff = NULL;
-	const char *s;
-	char *t;
+	char *arg, *cmd_buff;
 
 	if ( cmd == NULL || *cmd == '\0' || mode == NULL ||
 			(*mode != 'r' && *mode != 'w') ) {
@@ -130,45 +127,33 @@ FILE *mingw_popen(const char *cmd, const char *mode)
 		return NULL;
 	}
 
-	/* count double quotes */
-	count = 0;
-	for ( s=cmd; *s; ++s ) {
-		if ( *s == '"' ) {
-			++count;
-		}
-	}
-
-	len = strlen(bb_busybox_exec_path) + strlen(cmd) + 32 + count;
-	if ( (cmd_buff=malloc(len)) == NULL ) {
-		return NULL;
-	}
-	cmd_buff[0] = '\0';
-
-#if ENABLE_FEATURE_PREFER_APPLETS && NUM_APPLETS > 1
-	if (find_applet_by_name("sh") >= 0) {
-		sprintf(cmd_buff, "%s --busybox ", bb_busybox_exec_path);
-	}
-#endif
-	strcat(cmd_buff, "sh -c \"");
-
-	/* escape double quotes */
-	for ( s=cmd,t=cmd_buff+strlen(cmd_buff); *s; ++s ) {
-		if ( *s == '"' ) {
-			*t++ = '\\';
-		}
-		*t++ = *s;
-	}
-	*t++ = '"';
-	*t = '\0';
+	arg = quote_arg(cmd);
+	cmd_buff = xasprintf("sh -c %s", arg);
 
 	/* Create the pipe */
-	if ((fd=mingw_popen_internal(p, cmd_buff, mode, -1, NULL)) != -1) {
+	if ((fd=mingw_popen_internal(p, "sh", cmd_buff, mode, -1, NULL)) != -1) {
 		fptr = _fdopen(fd, *mode == 'r' ? "rb" : "wb");
 	}
 
 	free(cmd_buff);
+	free(arg);
 
 	return fptr;
+}
+
+// Only called for /dev/urandom and /dev/zero
+int mingw_popen_special(const char *device IF_NOT_DD(UNUSED_PARAM))
+{
+#if ENABLE_DD
+	char cmd[32];
+
+	/* Create the pipe */
+	strcat(strcpy(cmd, "dd if="), device);
+	return mingw_popen_internal(NULL, "dd", cmd, "r", -1, NULL);
+#else
+	errno = ENOSYS;
+	return -1;
+#endif
 }
 
 /*
@@ -176,31 +161,31 @@ FILE *mingw_popen(const char *cmd, const char *mode)
  *
  * - mode may be "r", "w" or "b" for read-only, write-only or
  *   bidirectional (from the perspective of the parent).
+ *   Or it could be "W" to redirect both stdout and stderr to fd0.
  * - if fd0 is a valid file descriptor it's used as input to the
  *   command ("r") or as the destination of the output from the
  *   command ("w").  Otherwise (and if not "b") use stdin or stdout.
  * - the pid of the command is returned in the variable pid, which
  *   can be NULL if the pid is not required.
+ * - mode "w+" forces the use of an external program.  This is required
+ *   for xz and lzma compression.
  */
-static int mingw_popen_internal(pipe_data *p, const char *cmd,
-					const char *mode, int fd0, pid_t *pid)
+static int mingw_popen_internal(pipe_data *p, const char *exe,
+					const char *cmd, const char *mode, int fd0, pid_t *pid)
 {
 	pipe_data pd;
 	STARTUPINFO siStartInfo;
 	int success;
 	int fd = -1;
 	int ip, ic, flags;
-
-	if ( cmd == NULL || *cmd == '\0' || mode == NULL ) {
-		return -1;
-	}
+	char *freeme = NULL;
 
 	switch (*mode) {
 	case 'r':
 		ip = 0;
 		flags = _O_RDONLY|_O_BINARY;
 		break;
-	case 'w':
+	case 'w': case 'W':
 		ip = 1;
 		flags = _O_WRONLY|_O_BINARY;
 		break;
@@ -223,6 +208,20 @@ static int mingw_popen_internal(pipe_data *p, const char *cmd,
 		goto finito;
 	}
 
+#if ENABLE_FEATURE_PREFER_APPLETS && NUM_APPLETS > 1
+	// "w+" mode forces a path lookup
+	if (mode[1] != '+' && find_applet_by_name(exe) >= 0) {
+		exe = bb_busybox_exec_path;
+	} else
+#endif
+	{
+		// Look up executable on PATH
+		freeme = find_first_executable(exe);
+		if (freeme == NULL)
+			bb_perror_msg_and_die("can't execute '%s'", exe);
+		exe = freeme;
+	}
+
 	/* Make the parent end of the pipe non-inheritable */
 	SetHandleInformation(p->pipe[ip], HANDLE_FLAG_INHERIT, 0);
 
@@ -237,16 +236,20 @@ static int mingw_popen_internal(pipe_data *p, const char *cmd,
 		siStartInfo.hStdInput = fd0 >= 0 ? (HANDLE)_get_osfhandle(fd0) :
 											GetStdHandle(STD_INPUT_HANDLE);
 	}
-	else if ( *mode == 'w' ) {
+	else if ( *mode == 'w' || *mode == 'W' ) {
 		siStartInfo.hStdOutput = fd0 >= 0 ? (HANDLE)_get_osfhandle(fd0) :
 											GetStdHandle(STD_OUTPUT_HANDLE);
 	}
-	siStartInfo.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+	if ( *mode == 'W' )
+		siStartInfo.hStdError = siStartInfo.hStdOutput;
+	else
+		siStartInfo.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+
 	siStartInfo.wShowWindow = SW_HIDE;
 	siStartInfo.dwFlags = STARTF_USESTDHANDLES|STARTF_USESHOWWINDOW;
 
-	success = CreateProcess(NULL,
-				(LPTSTR)cmd,       /* command line */
+	success = CreateProcess((LPCSTR)exe,
+				(LPSTR)cmd,        /* command line */
 				NULL,              /* process security attributes */
 				NULL,              /* primary thread security attributes */
 				TRUE,              /* handles are inherited */
@@ -267,6 +270,7 @@ static int mingw_popen_internal(pipe_data *p, const char *cmd,
 	fd = _open_osfhandle((intptr_t)p->pipe[ip], flags);
 
 finito:
+	free(freeme);
 	if ( fd == -1 ) {
 		close_pipe_data(p);
 	}
@@ -280,9 +284,10 @@ finito:
 	return fd;
 }
 
-int mingw_popen_fd(const char *cmd, const char *mode, int fd0, pid_t *pid)
+int mingw_popen_fd(const char *exe, const char *cmd, const char *mode,
+					int fd0, pid_t *pid)
 {
-	return mingw_popen_internal(NULL, cmd, mode, fd0, pid);
+	return mingw_popen_internal(NULL, exe, cmd, mode, fd0, pid);
 }
 
 int mingw_pclose(FILE *fp)
@@ -314,25 +319,15 @@ pid_t mingw_fork_compressor(int fd, const char *compressor, const char *mode)
 	int fd1;
 	pid_t pid;
 
-#if ENABLE_FEATURE_PREFER_APPLETS && NUM_APPLETS > 1
-	if (find_applet_by_name(compressor) >= 0
-# if ENABLE_XZ || ENABLE_LZMA
-		/* xz and lzma applets don't support compression, try using
-		 * an external program */
-		&& !(mode[0] == 'w' && index_in_strings("lzma\0xz\0", compressor) >= 0)
-# endif
-		) {
-		cmd = xasprintf("%s --busybox %s -cf -", bb_busybox_exec_path,
-					compressor);
-	} else {
-		// share format string
-		cmd = xasprintf("%s --busybox %s -cf -" + 13, compressor);
-	}
-#else
 	cmd = xasprintf("%s -cf -", compressor);
+#if ENABLE_FEATURE_SEAMLESS_XZ || ENABLE_FEATURE_SEAMLESS_LZMA
+	// xz and lzma applets don't support compression, we must use
+	// an external command.
+	if (mode[0] == 'w' && index_in_strings("lzma\0xz\0", compressor) >= 0)
+		mode = "w+";
 #endif
 
-	if ((fd1 = mingw_popen_fd(cmd, mode, fd, &pid)) == -1)
+	if ((fd1 = mingw_popen_fd(compressor, cmd, mode, fd, &pid)) == -1)
 		bb_perror_msg_and_die("can't execute '%s'", compressor);
 
 	free(cmd);

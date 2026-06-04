@@ -239,8 +239,13 @@ char FAST_FUNC get_header_tar(archive_handle_t *archive_handle)
 	/* Check header has valid magic, "ustar" is for the proper tar,
 	 * five NULs are for the old tar format  */
 	if (!is_prefixed_with(tar.magic, "ustar")
+#if !ENABLE_PLATFORM_MINGW32
 	 && (!ENABLE_FEATURE_TAR_OLDGNU_COMPATIBILITY
 	     || memcmp(tar.magic, "\0\0\0\0", 5) != 0)
+#else
+	 && (!ENABLE_FEATURE_TAR_OLDGNU_COMPATIBILITY
+	     || memcmp(tar.magic, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 16) != 0)
+#endif
 	) {
 #if ENABLE_FEATURE_TAR_AUTODETECT
  autodetect:
@@ -454,8 +459,15 @@ char FAST_FUNC get_header_tar(archive_handle_t *archive_handle)
 #endif
 
 	/* Everything up to and including last ".." component is stripped */
-	overlapping_strcpy(file_header->name, strip_unsafe_prefix(file_header->name));
-//TODO: do the same for file_header->link_target?
+	strip_unsafe_prefix(file_header->name);
+	if (file_header->link_target && !S_ISLNK(file_header->mode)) {
+		/* GNU tar 1.34 examples:
+		 * tar: Removing leading '/' from hard link targets
+		 * tar: Removing leading '../' from hard link targets
+		 * tar: Removing leading 'etc/../' from hard link targets
+		 */
+		strip_unsafe_prefix(file_header->link_target);
+	}
 
 	/* Strip trailing '/' in directories */
 	/* Must be done after mode is set as '/' is used to check if it's a directory */

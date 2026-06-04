@@ -4,19 +4,25 @@
 #undef getenv
 #undef putenv
 
-char *mingw_getenv(const char *name)
+char * FAST_FUNC mingw_getenv(const char *name)
 {
 	char *result = getenv(name);
-	if (!result && !strcmp(name, "TMPDIR")) {
-		/* on Windows it is TMP and TEMP */
-		result = getenv("TMP");
-		if (!result)
-			result = getenv("TEMP");
+	if (!result) {
+		if (!strcmp(name, "TMPDIR")) {
+			/* on Windows it is TMP and TEMP */
+			result = getenv("TMP");
+			if (!result)
+				result = getenv("TEMP");
+		} else if (!strcmp(name, "HOME")) {
+			struct passwd *p = getpwuid(getuid());
+			if (p)
+				result = p->pw_dir;
+		}
 	}
 	return result;
 }
 
-int setenv(const char *name, const char *value, int replace)
+int FAST_FUNC setenv(const char *name, const char *value, int replace)
 {
 	int out;
 	char *envstr, *to_free = NULL;
@@ -45,7 +51,7 @@ int setenv(const char *name, const char *value, int replace)
  * It isn't possible to create an environment variable with an empty value
  * using WIN32 _putenv.
  */
-int unsetenv(const char *name)
+int FAST_FUNC unsetenv(const char *name)
 {
 	char *envstr;
 	int ret;
@@ -81,7 +87,7 @@ int clearenv(void)
 	return 0;
 }
 
-int mingw_putenv(const char *env)
+int FAST_FUNC mingw_putenv(const char *env)
 {
 	char *s, **envp;
 	int ret = 0;

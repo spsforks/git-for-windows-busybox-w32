@@ -29,7 +29,7 @@
  *  Replaced our_malloc with xmalloc and our_realloc with xrealloc
  */
 //config:config GETOPT
-//config:	bool "getopt (5.8 kb)"
+//config:	bool "getopt (6 kb)"
 //config:	default y
 //config:	help
 //config:	The getopt utility is used to break up (parse) options in command
@@ -412,6 +412,11 @@ int getopt_main(int argc, char **argv)
 			bb_simple_error_msg_and_die("missing optstring argument");
 	}
 
+#if ENABLE_PLATFORM_MINGW32
+	// Mingw-w64 getopt(3) uses __argv[0] in error messages, not the
+	// first element of its argument array.
+	__argv[0] =
+#endif
 	argv[n] = name ? name : argv[0];
 	return generate_output(argv + n, argc - n, optstr, long_options);
 }

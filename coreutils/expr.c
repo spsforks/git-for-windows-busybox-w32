@@ -23,7 +23,7 @@
  * provided they all associate ((x op x) op x).
  */
 //config:config EXPR
-//config:	bool "expr (6.6 kb)"
+//config:	bool "expr (6.8 kb)"
 //config:	default y
 //config:	help
 //config:	expr is used to calculate numbers and print the result
@@ -96,6 +96,10 @@ typedef long arith_t;
 #endif
 
 /* TODO: use bb_strtol[l]? It's easier to check for errors... */
+
+#if ENABLE_PLATFORM_MINGW32
+# define STRING BB_STRING
+#endif
 
 /* The kinds of value we can have.  */
 enum {

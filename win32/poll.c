@@ -1,22 +1,22 @@
 /* Emulation for poll(2)
    Contributed by Paolo Bonzini.
 
-   Copyright 2001-2003, 2006-2018 Free Software Foundation, Inc.
+   Copyright 2001-2003, 2006-2024 Free Software Foundation, Inc.
 
    This file is part of gnulib.
 
-   This program is free software; you can redistribute it and/or modify
-   it under the terms of the GNU General Public License as published by
-   the Free Software Foundation; either version 2, or (at your option)
-   any later version.
+   This file is free software: you can redistribute it and/or modify
+   it under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of the
+   License, or (at your option) any later version.
 
-   This program is distributed in the hope that it will be useful,
+   This file is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
+   GNU Lesser General Public License for more details.
 
-   You should have received a copy of the GNU General Public License along
-   with this program; if not, see <https://www.gnu.org/licenses/>.  */
+   You should have received a copy of the GNU Lesser General Public License
+   along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
 
 /* Tell gcc not to warn about the (nfd < 0) tests, below.  */
 #if (__GNUC__ == 4 && 3 <= __GNUC_MINOR__) || 4 < __GNUC__
@@ -35,9 +35,8 @@
 #include <limits.h>
 #include <assert.h>
 
-#if (defined _WIN32 || defined __WIN32__) && ! defined __CYGWIN__
+#if defined _WIN32 && ! defined __CYGWIN__
 # define WINDOWS_NATIVE
-# define WIN32_NATIVE
 # include <winsock2.h>
 # include <windows.h>
 # include <io.h>
@@ -71,6 +70,25 @@
 
 #ifdef WINDOWS_NATIVE
 
+/* Don't assume that UNICODE is not defined.  */
+# undef GetModuleHandle
+# define GetModuleHandle GetModuleHandleA
+# undef PeekConsoleInput
+# define PeekConsoleInput PeekConsoleInputA
+# undef CreateEvent
+# define CreateEvent CreateEventA
+# undef PeekMessage
+# define PeekMessage PeekMessageA
+# undef DispatchMessage
+# define DispatchMessage DispatchMessageA
+
+/* Do *not* use the function WSAPoll
+   <https://docs.microsoft.com/en-us/windows/desktop/api/winsock2/nf-winsock2-wsapoll>
+   because there is a bug named “Windows 8 Bugs 309411 - WSAPoll does not
+   report failed connections” that Microsoft won't fix.
+   See Daniel Stenberg: "WASPoll is broken"
+   <https://daniel.haxx.se/blog/2012/10/10/wsapoll-is-broken/>.  */
+
 /* Here we need the recv() function from Windows, that takes a SOCKET as
    first argument, not any possible gnulib override.  */
 # undef recv
@@ -78,6 +96,14 @@
 /* Here we need the select() function from Windows, because we pass bit masks
    of SOCKETs, not bit masks of FDs.  */
 # undef select
+
+/* Here we need timeval from Windows since this is what the select() function
+   from Windows requires.  */
+# undef timeval
+
+/* Avoid warnings from gcc -Wcast-function-type.  */
+# define GetProcAddress \
+   (void *) GetProcAddress
 
 static BOOL IsConsoleHandle (HANDLE h)
 {
@@ -144,14 +170,17 @@ windows_compute_revents (HANDLE h, int *p_sought)
   INPUT_RECORD *irbuffer;
   DWORD avail, nbuffer;
   BOOL bRet;
+#if 0
   IO_STATUS_BLOCK iosb;
   FILE_PIPE_LOCAL_INFORMATION fpli;
   static PNtQueryInformationFile NtQueryInformationFile;
   static BOOL once_only;
+#endif
 
   switch (GetFileType (h))
     {
     case FILE_TYPE_PIPE:
+#if 0
       if (!once_only)
         {
           NtQueryInformationFile = (PNtQueryInformationFile)
@@ -159,6 +188,7 @@ windows_compute_revents (HANDLE h, int *p_sought)
                             "NtQueryInformationFile");
           once_only = TRUE;
         }
+#endif
 
       happened = 0;
       if (PeekNamedPipe (h, NULL, 0, NULL, &avail, NULL) != 0)
@@ -171,6 +201,14 @@ windows_compute_revents (HANDLE h, int *p_sought)
 
       else
         {
+		/* The writability of a pipe can't be detected reliably on Windows.
+		 * Just say it's OK.
+		 *
+		 * Details:
+		 *
+		 *    https://github.com/git-for-windows/git/commit/94f4d01932279c419844aa708bec31a26056bc6b
+		 */
+#if 0
           /* It was the write-end of the pipe.  Check if it is writable.
              If NtQueryInformationFile fails, optimistically assume the pipe is
              writable.  This could happen on Windows 9x, where
@@ -188,15 +226,14 @@ windows_compute_revents (HANDLE h, int *p_sought)
               || fpli.WriteQuotaAvailable >= PIPE_BUF
               || (fpli.OutboundQuota < PIPE_BUF &&
                   fpli.WriteQuotaAvailable == fpli.OutboundQuota))
+#endif
             happened |= *p_sought & (POLLOUT | POLLWRNORM | POLLWRBAND);
         }
       return happened;
 
     case FILE_TYPE_CHAR:
-      ret = WaitForSingleObject (h, 0);
-      if (!IsConsoleHandle (h))
-        return ret == WAIT_OBJECT_0 ? *p_sought & ~(POLLPRI | POLLRDBAND) : 0;
-
+      // Fall through to default case for non-console, e.g. /dev/null.
+      if (IsConsoleHandle (h)) {
       nbuffer = avail = 0;
       bRet = GetNumberOfConsoleInputEvents (h, &nbuffer);
       if (bRet)
@@ -204,17 +241,20 @@ windows_compute_revents (HANDLE h, int *p_sought)
           /* Input buffer.  */
           *p_sought &= POLLIN | POLLRDNORM;
           if (nbuffer == 0)
-            return POLLHUP;
+            // Having no unread events isn't an error condition.
+            return 0 /* was POLLHUP */;
           if (!*p_sought)
             return 0;
 
           irbuffer = (INPUT_RECORD *) alloca (nbuffer * sizeof (INPUT_RECORD));
-          bRet = PeekConsoleInput (h, irbuffer, nbuffer, &avail);
+          bRet = PeekConsoleInputW (h, irbuffer, nbuffer, &avail);
           if (!bRet || avail == 0)
             return POLLHUP;
 
           for (i = 0; i < avail; i++)
-            if (irbuffer[i].EventType == KEY_EVENT)
+            // Ignore key release.
+            if (irbuffer[i].EventType == KEY_EVENT &&
+                irbuffer[i].Event.KeyEvent.bKeyDown)
               return *p_sought;
           return 0;
         }
@@ -224,13 +264,16 @@ windows_compute_revents (HANDLE h, int *p_sought)
           *p_sought &= POLLOUT | POLLWRNORM | POLLWRBAND;
           return *p_sought;
         }
+      }
+      /* fall through */
 
     default:
       ret = WaitForSingleObject (h, 0);
       if (ret == WAIT_OBJECT_0)
         return *p_sought & ~(POLLPRI | POLLRDBAND);
 
-      return *p_sought & (POLLOUT | POLLWRNORM | POLLWRBAND);
+      // Add (POLLIN | POLLRDNORM).  Why only support write?
+      return *p_sought & (POLLIN | POLLRDNORM | POLLOUT | POLLWRNORM | POLLWRBAND);
     }
 }
 
@@ -332,7 +375,7 @@ compute_revents (int fd, int sought, fd_set *rfds, fd_set *wfds, fd_set *efds)
 }
 #endif /* !MinGW */
 
-int
+int FAST_FUNC
 poll (struct pollfd *pfd, nfds_t nfd, int timeout)
 {
 #ifndef WINDOWS_NATIVE
@@ -364,14 +407,15 @@ poll (struct pollfd *pfd, nfds_t nfd, int timeout)
   if (timeout == 0)
     {
       ptv = &tv;
-      ptv->tv_sec = 0;
-      ptv->tv_usec = 0;
+      tv = (struct timeval) {0};
     }
   else if (timeout > 0)
     {
       ptv = &tv;
-      ptv->tv_sec = timeout / 1000;
-      ptv->tv_usec = (timeout % 1000) * 1000;
+      tv = (struct timeval) {
+        .tv_sec = timeout / 1000,
+        .tv_usec = (timeout % 1000) * 1000
+      };
     }
   else if (timeout == INFTIM)
     /* wait forever */
@@ -402,7 +446,6 @@ poll (struct pollfd *pfd, nfds_t nfd, int timeout)
         }
       if (pfd[i].events & (POLLIN | POLLRDNORM))
         FD_SET (pfd[i].fd, &rfds);
-
       /* see select(2): "the only exceptional condition detectable
          is out-of-band data received on a socket", hence we push
          POLLWRBAND events onto wfds instead of efds. */
@@ -440,6 +483,9 @@ poll (struct pollfd *pfd, nfds_t nfd, int timeout)
   MSG msg;
   int rc = 0;
   nfds_t i;
+  DWORD real_timeout = 0;
+  int save_timeout = timeout;
+  clock_t tend = clock () + timeout;
 
   if (nfd > INT_MAX || timeout < -1)
     {
@@ -451,6 +497,14 @@ poll (struct pollfd *pfd, nfds_t nfd, int timeout)
     hEvent = CreateEvent (NULL, FALSE, FALSE, NULL);
 
 restart:
+  /* How much is left to wait? */
+  timeout = save_timeout;
+  if (timeout != INFTIM)
+    {
+      clock_t now = clock ();
+      real_timeout = tend > now ? tend - now : 0;
+    }
+
   handle_array[0] = hEvent;
   nhandles = 1;
   FD_ZERO (&rfds);
@@ -591,7 +645,7 @@ restart:
         rc++;
     }
 
-  if (!rc && timeout == INFTIM)
+  if (!rc && (save_timeout == INFTIM || (real_timeout != 0 && nhandles > 1)))
     {
       SleepEx (1, TRUE);
       goto restart;

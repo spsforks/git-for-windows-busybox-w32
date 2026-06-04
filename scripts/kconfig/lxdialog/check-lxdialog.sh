@@ -6,6 +6,10 @@ ldflags()
 {
 	pkg-config --libs ncursesw 2>/dev/null && exit
 	pkg-config --libs ncurses 2>/dev/null && exit
+	if [ -n "$W64DEVKIT" ]
+	then
+		echo "./scripts/kconfig/libcurses/lib.a" && exit
+	fi
 	for ext in so a dll.a dylib ; do
 		for lib in ncursesw ncurses curses ; do
 			$cc -print-file-name=lib${lib}.${ext} | grep -q /
@@ -34,6 +38,8 @@ ccflags()
 		echo '-I/usr/include/ncurses -DCURSES_LOC="<curses.h>"'
 	elif [ -f /usr/include/ncurses.h ]; then
 		echo '-DCURSES_LOC="<ncurses.h>"'
+	elif [ -n "$W64DEVKIT" ]; then
+		echo '-I./scripts/kconfig/libcurses -DCURSES_LOC="<curses.h>"'
 	else
 		echo '-DCURSES_LOC="<curses.h>"'
 	fi
@@ -47,7 +53,7 @@ trap "rm -f $tmp" 0 1 2 3 15
 check() {
         $cc -x c - -o $tmp 2>/dev/null <<'EOF'
 #include CURSES_LOC
-main() {}
+int main() { return 0; }
 EOF
 	if [ $? != 0 ]; then
 	    echo " *** Unable to find the ncurses libraries or the"       1>&2

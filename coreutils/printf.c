@@ -38,7 +38,7 @@
 /* 19990508 Busy Boxed! Dave Cinege */
 
 //config:config PRINTF
-//config:	bool "printf (3.8 kb)"
+//config:	bool "printf (4.1 kb)"
 //config:	default y
 //config:	help
 //config:	printf is used to format and print specified strings.
@@ -419,7 +419,7 @@ static char **print_formatted(char *f, char **argv, int *conv_err)
 			/* Add "ll" if integer modifier, then print */
 			{
 				static const char format_chars[] ALIGN1 = "diouxXfeEgGcs";
-				char *p = strchr(format_chars, *f);
+				char *p = (char*)strchr(format_chars, *f);
 				/* needed - try "printf %" without it */
 				if (p == NULL || *f == '\0') {
 					bb_error_msg("%s: invalid format", direc_start);
@@ -490,10 +490,10 @@ int printf_main(int argc UNUSED_PARAM, char **argv)
 	/* bash builtin errors out on "printf '-%s-\n' foo",
 	 * coreutils-6.9 works. Both work with "printf -- '-%s-\n' foo".
 	 * We will mimic coreutils. */
-	if (argv[1] && argv[1][0] == '-' && argv[1][1] == '-' && !argv[1][2])
-		argv++;
-	if (!argv[1]) {
-		if (ENABLE_ASH_PRINTF
+	argv = skip_dash_dash(argv);
+
+	if (!argv[0]) {
+		if ((ENABLE_ASH_PRINTF || ENABLE_HUSH_PRINTF)
 		 && applet_name[0] != 'p'
 		) {
 			bb_simple_error_msg("usage: printf FORMAT [ARGUMENT...]");
@@ -502,8 +502,8 @@ int printf_main(int argc UNUSED_PARAM, char **argv)
 		bb_show_usage();
 	}
 
-	format = argv[1];
-	argv2 = argv + 2;
+	format = argv[0];
+	argv2 = argv + 1;
 
 	conv_err = 0;
 	do {

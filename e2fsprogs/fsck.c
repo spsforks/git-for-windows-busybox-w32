@@ -34,7 +34,7 @@
  * It doesn't guess filesystem types from on-disk format.
  */
 //config:config FSCK
-//config:	bool "fsck (7.4 kb)"
+//config:	bool "fsck (7.6 kb)"
 //config:	default y
 //config:	help
 //config:	fsck is used to check and optionally repair one or more filesystems.
@@ -423,13 +423,11 @@ static int wait_one(int flags)
 	/* if (G.noexecute) { already returned -1; } */
 
 	while (1) {
-		pid = waitpid(-1, &status, flags);
+		pid = safe_waitpid(-1, &status, flags);
 		kill_all_if_got_signal();
 		if (pid == 0) /* flags == WNOHANG and no children exited */
 			return -1;
 		if (pid < 0) {
-			if (errno == EINTR)
-				continue;
 			if (errno == ECHILD) { /* paranoia */
 				bb_simple_error_msg("wait: no more children");
 				return -1;

@@ -119,6 +119,9 @@
 //usage:     "\n	-t	Expand tabs to spaces in output"
 //usage:     "\n	-U	Output LINES lines of context"
 //usage:     "\n	-w	Ignore all whitespace"
+//usage:	IF_PLATFORM_MINGW32(IF_FEATURE_DIFF_LONG_OPTIONS(
+//usage:     "\n	--binary  Treat input as binary, not text"
+//usage:	))
 
 #include "libbb.h"
 #include "common_bufsiz.h"
@@ -154,6 +157,9 @@ enum {                  /* Commandline flags */
 	FLAG_p,         /* not implemented */
 	FLAG_B,
 	FLAG_E,         /* not implemented */
+#if ENABLE_PLATFORM_MINGW32 && ENABLE_FEATURE_DIFF_LONG_OPTIONS
+	FLAG_binary,
+#endif
 };
 #define FLAG(x) (1 << FLAG_##x)
 
@@ -217,6 +223,9 @@ static int read_token(FILE_and_pos_t *ft, token_t tok)
 		int t;
 
 		t = fgetc(ft->ft_fp);
+#if ENABLE_PLATFORM_MINGW32 && ENABLE_FEATURE_DIFF_LONG_OPTIONS
+ newline:
+#endif
 		if (t != EOF)
 			ft->ft_pos++;
 		is_space = (t == EOF || isspace(t));
@@ -232,6 +241,16 @@ static int read_token(FILE_and_pos_t *ft, token_t tok)
 
 		if ((option_mask32 & FLAG(w)) && is_space)
 			continue;
+#if ENABLE_PLATFORM_MINGW32 && ENABLE_FEATURE_DIFF_LONG_OPTIONS
+		if (!(option_mask32 & FLAG(binary)) && t == '\r') {
+			int t2 = fgetc(ft->ft_fp);
+			if (t2 == '\n') {
+				t = t2;
+				goto newline;
+			}
+			ungetc(t2, ft->ft_fp);
+		}
+#endif
 
 		/* Trim char value to low 9 bits */
 		t &= CHAR_MASK;
@@ -754,7 +773,7 @@ static int diffreg(char *file[2])
 			fd = fd_tmp;
 			xlseek(fd, 0, SEEK_SET);
 		}
-		fp[i] = fdopen(fd, "r");
+		fp[i] = xfdopen_for_read(fd);
 	}
 
 	setup_common_bufsiz();
@@ -985,6 +1004,9 @@ static const char diff_longopts[] ALIGN1 =
 	"report-identical-files\0"   No_argument       "s"
 	"starting-file\0"            Required_argument "S"
 	"minimal\0"                  No_argument       "d"
+#if ENABLE_PLATFORM_MINGW32
+	"binary\0"                   No_argument       "\xff"
+#endif
 	;
 # define GETOPT32 getopt32long
 # define LONGOPTS ,diff_longopts

@@ -7,7 +7,7 @@
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
 //config:config DD
-//config:	bool "dd (7.5 kb)"
+//config:	bool "dd (8.3 kb)"
 //config:	default y
 //config:	help
 //config:	dd copies a file (from standard input to standard output,
@@ -59,7 +59,12 @@
 //usage:       "[if=FILE] [of=FILE] [" IF_FEATURE_DD_IBS_OBS("ibs=N obs=N/") "bs=N] [count=N] [skip=N] [seek=N]"
 //usage:	IF_FEATURE_DD_IBS_OBS("\n"
 //usage:       "	[conv=notrunc|noerror|sync|fsync]\n"
+//usage:	IF_NOT_PLATFORM_MINGW32(
 //usage:       "	[iflag=skip_bytes|count_bytes|fullblock|direct] [oflag=seek_bytes|append|direct]"
+//usage:	)
+//usage:	IF_PLATFORM_MINGW32(
+//usage:       "	[iflag=skip_bytes|count_bytes|fullblock] [oflag=seek_bytes|append]"
+//usage:	)
 //usage:	)
 //usage:#define dd_full_usage "\n\n"
 //usage:       "Copy a file with converting and formatting\n"
@@ -84,8 +89,10 @@
 //usage:     "\n	iflag=skip_bytes	skip=N is in bytes"
 //usage:     "\n	iflag=count_bytes	count=N is in bytes"
 //usage:     "\n	oflag=seek_bytes	seek=N is in bytes"
+//usage:	IF_NOT_PLATFORM_MINGW32(
 //usage:     "\n	iflag=direct	O_DIRECT input"
 //usage:     "\n	oflag=direct	O_DIRECT output"
+//usage:	)
 //usage:     "\n	iflag=fullblock	Read full blocks"
 //usage:     "\n	oflag=append	Open output in append mode"
 //usage:	)
@@ -106,6 +113,10 @@
 
 #include "libbb.h"
 #include "common_bufsiz.h"
+
+#if ENABLE_PLATFORM_MINGW32
+# undef O_DIRECT
+#endif
 
 /* This is a NOEXEC applet. Be very careful! */
 
@@ -144,13 +155,13 @@ enum {
 	FLAG_SKIP_BYTES    = (1 << 5) * ENABLE_FEATURE_DD_IBS_OBS,
 	FLAG_COUNT_BYTES   = (1 << 6) * ENABLE_FEATURE_DD_IBS_OBS,
 	FLAG_FULLBLOCK     = (1 << 7) * ENABLE_FEATURE_DD_IBS_OBS,
-	FLAG_IDIRECT       = (1 << 8) * ENABLE_FEATURE_DD_IBS_OBS,
+	FLAG_IDIRECT       = (1 << 8) * ENABLE_FEATURE_DD_IBS_OBS * ENABLE_PLATFORM_POSIX,
 	/* end of input flags */
 	/* start of output flags */
 	FLAG_OFLAG_SHIFT   = 9,
 	FLAG_SEEK_BYTES    = (1 << 9) * ENABLE_FEATURE_DD_IBS_OBS,
 	FLAG_APPEND        = (1 << 10) * ENABLE_FEATURE_DD_IBS_OBS,
-	FLAG_ODIRECT       = (1 << 11) * ENABLE_FEATURE_DD_IBS_OBS,
+	FLAG_ODIRECT       = (1 << 11) * ENABLE_FEATURE_DD_IBS_OBS * ENABLE_PLATFORM_POSIX,
 	/* end of output flags */
 	FLAG_TWOBUFS       = (1 << 12) * ENABLE_FEATURE_DD_IBS_OBS,
 	FLAG_COUNT         = 1 << 13,
@@ -203,6 +214,7 @@ static void dd_output_status(int UNUSED_PARAM cur_signal)
 }
 
 #if ENABLE_FEATURE_DD_IBS_OBS
+# ifdef O_DIRECT
 static int clear_O_DIRECT(int fd)
 {
 	if (errno == EINVAL) {
@@ -214,6 +226,7 @@ static int clear_O_DIRECT(int fd)
 	}
 	return 0;
 }
+# endif
 #endif
 
 static ssize_t dd_read(void *ibuf, size_t ibs)
@@ -221,15 +234,19 @@ static ssize_t dd_read(void *ibuf, size_t ibs)
 	ssize_t n;
 
 #if ENABLE_FEATURE_DD_IBS_OBS
+# if !ENABLE_PLATFORM_MINGW32
  read_again:
+# endif
 	if (G.flags & FLAG_FULLBLOCK)
 		n = full_read(ifd, ibuf, ibs);
 	else
 #endif
 		n = safe_read(ifd, ibuf, ibs);
 #if ENABLE_FEATURE_DD_IBS_OBS
+# ifdef O_DIRECT
 	if (n < 0 && (G.flags & FLAG_IDIRECT) && clear_O_DIRECT(ifd))
 		goto read_again;
+# endif
 #endif
 	return n;
 }
@@ -239,11 +256,15 @@ static bool write_and_stats(const void *buf, size_t len, size_t obs,
 {
 	ssize_t n;
 
+#if !ENABLE_PLATFORM_MINGW32
  IF_FEATURE_DD_IBS_OBS(write_again:)
+#endif
 	n = full_write(ofd, buf, len);
 #if ENABLE_FEATURE_DD_IBS_OBS
+# ifdef O_DIRECT
 	if (n < 0 && (G.flags & FLAG_ODIRECT) && clear_O_DIRECT(ofd))
 		goto write_again;
+# endif
 #endif
 
 #if ENABLE_FEATURE_DD_THIRD_STATUS_LINE
@@ -268,12 +289,6 @@ static bool write_and_stats(const void *buf, size_t len, size_t obs,
 	bb_perror_msg("error writing '%s'", filename);
 	return 1;
 }
-
-#if ENABLE_LFS
-# define XATOU_SFX xatoull_sfx
-#else
-# define XATOU_SFX xatoul_sfx
-#endif
 
 #if ENABLE_FEATURE_DD_IBS_OBS
 static int parse_comma_flags(char *val, const char *words, const char *error_in)
@@ -312,6 +327,17 @@ static void *alloc_buf(size_t size)
 	return xmalloc(size);
 }
 
+#if ENABLE_PLATFORM_MINGW32
+// Does 'path' refer to a physical drive in the win32 device namespace?
+static int is_drive_path(const char *path)
+{
+	char *s = auto_string(strdup(path));
+
+	bs_to_slash(s);
+	return strncasecmp(s, "//./PhysicalDrive", 17) == 0;
+}
+#endif
+
 int dd_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
 int dd_main(int argc UNUSED_PARAM, char **argv)
 {
@@ -325,9 +351,9 @@ int dd_main(int argc UNUSED_PARAM, char **argv)
 	static const char conv_words[] ALIGN1 =
 		"notrunc\0""sync\0""noerror\0""fsync\0""swab\0";
 	static const char iflag_words[] ALIGN1 =
-		"skip_bytes\0""count_bytes\0""fullblock\0""direct\0";
+		"skip_bytes\0""count_bytes\0""fullblock\0"IF_PLATFORM_POSIX("direct\0");
 	static const char oflag_words[] ALIGN1 =
-		"seek_bytes\0append\0""direct\0";
+		"seek_bytes\0append\0"IF_PLATFORM_POSIX("direct\0");
 #endif
 #if ENABLE_FEATURE_DD_STATUS
 	static const char status_words[] ALIGN1 =
@@ -374,7 +400,7 @@ int dd_main(int argc UNUSED_PARAM, char **argv)
 		OP_oflag_direct,
 #endif
 	};
-	smallint exitcode = EXIT_FAILURE;
+	exitcode_t exitcode = EXIT_FAILURE;
 	int i;
 	size_t ibs = 512;
 	char *ibuf;
@@ -456,15 +482,15 @@ int dd_main(int argc UNUSED_PARAM, char **argv)
 		/* These can be large: */
 		if (what == OP_count) {
 			G.flags |= FLAG_COUNT;
-			count = XATOU_SFX(val, cwbkMG_suffixes);
+			count = XATOOFF_SFX(val, cwbkMG_suffixes);
 			/*continue;*/
 		}
 		if (what == OP_seek) {
-			seek = XATOU_SFX(val, cwbkMG_suffixes);
+			seek = XATOOFF_SFX(val, cwbkMG_suffixes);
 			/*continue;*/
 		}
 		if (what == OP_skip) {
-			skip = XATOU_SFX(val, cwbkMG_suffixes);
+			skip = XATOOFF_SFX(val, cwbkMG_suffixes);
 			/*continue;*/
 		}
 		if (what == OP_if) {
@@ -506,8 +532,13 @@ int dd_main(int argc UNUSED_PARAM, char **argv)
 	if (infile) {
 		int iflag = O_RDONLY;
 #if ENABLE_FEATURE_DD_IBS_OBS
-		if (G.flags & FLAG_IDIRECT)
+		if (G.flags & FLAG_IDIRECT) {
+# ifdef O_DIRECT
 			iflag |= O_DIRECT;
+# else
+			bb_error_msg_and_die("O_DIRECT not supported on this platform");
+# endif
+		}
 #endif
 		xmove_fd(MINGW_SPECIAL(xopen)(infile, iflag), ifd);
 #if ENABLE_PLATFORM_MINGW32
@@ -524,8 +555,19 @@ int dd_main(int argc UNUSED_PARAM, char **argv)
 		if (G.flags & FLAG_APPEND)
 			oflag |= O_APPEND;
 #if ENABLE_FEATURE_DD_IBS_OBS
-		if (G.flags & FLAG_ODIRECT)
+		if (G.flags & FLAG_ODIRECT) {
+# ifdef O_DIRECT
 			oflag |= O_DIRECT;
+# else
+			bb_error_msg_and_die("O_DIRECT not supported on this platform");
+# endif
+		}
+#endif
+#if ENABLE_PLATFORM_MINGW32
+		if (is_drive_path(outfile)) {
+			// Turn off options not supported by Windows device files.
+			oflag &= ~(O_CREAT | O_TRUNC);
+		}
 #endif
 		xmove_fd(xopen(outfile, oflag), ofd);
 

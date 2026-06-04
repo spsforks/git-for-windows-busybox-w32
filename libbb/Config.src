@@ -37,6 +37,15 @@ config PASSWORD_MINLEN
 	help
 	Minimum allowable password length.
 
+config FEATURE_USE_CNG_API
+	bool "Use the Windows CNG API for checksums"
+	default n
+	depends on PLATFORM_MINGW32
+	help
+	Use the in-built Windows CNG API for checksums.
+	This reduces code size, but is only supported
+	on Windows Vista and above.
+
 config MD5_SMALL
 	int "MD5: Trade bytes for speed (0:fast, 3:slow)"
 	default 1  # all "fast or small" options default to small
@@ -67,6 +76,7 @@ config SHA1_SMALL
 config SHA1_HWACCEL
 	bool "SHA1: Use hardware accelerated instructions if possible"
 	default y
+	depends on !FEATURE_USE_CNG_API
 	help
 	On x86, this adds ~590 bytes of code. Throughput
 	is about twice as fast as fully-unrolled generic code.
@@ -74,6 +84,7 @@ config SHA1_HWACCEL
 config SHA256_HWACCEL
 	bool "SHA256: Use hardware accelerated instructions if possible"
 	default y
+	depends on !FEATURE_USE_CNG_API
 	help
 	On x86, this adds ~1k bytes of code.
 
@@ -182,11 +193,21 @@ config FEATURE_EDITING_VI
 config FEATURE_EDITING_HISTORY
 	int "History size"
 	# Don't allow way too big values here, code uses fixed "char *history[N]" struct member
-	range 0 9999
-	default 255
+	range 0 2000
+	default 200
 	depends on FEATURE_EDITING
 	help
 	Specify command history size (0 - disable).
+
+config FEATURE_EDITING_HISTORY_DEFAULT
+	int "Default history size"
+	range 0 FEATURE_EDITING_HISTORY
+	default 255
+	depends on PLATFORM_MINGW32 && FEATURE_EDITING && FEATURE_SH_HISTFILESIZE
+	help
+	Specify default command history size. This may be smaller than
+	FEATURE_EDITING_HISTORY, in which case the user may increase
+	the history size by setting HISTFILESIZE.
 
 config FEATURE_EDITING_SAVEHISTORY
 	bool "History saving"
@@ -369,3 +390,25 @@ config UNICODE_PRESERVE_BROKEN
 	For example, this means that entering 'l', 's', ' ', 0xff, [Enter]
 	at shell prompt will list file named 0xff (single char name
 	with char value 255), not file named '?'.
+
+choice
+	prompt "Use LOOP_CONFIGURE for losetup and loop mounts"
+	default TRY_LOOP_CONFIGURE
+	help
+	LOOP_CONFIGURE is added to Linux 5.8
+	https://lwn.net/Articles/820408/
+	This allows userspace to completely setup a loop device with a single
+	ioctl, removing the in-between state where the device can be partially
+	configured - eg the loop device has a backing file associated with it,
+	but is reading from the wrong offset.
+
+config LOOP_CONFIGURE
+	bool "use LOOP_CONFIGURE, needs kernel >= 5.8"
+
+config NO_LOOP_CONFIGURE
+	bool "use LOOP_SET_FD + LOOP_SET_STATUS"
+
+config TRY_LOOP_CONFIGURE
+	bool "try LOOP_CONFIGURE, fall back to LOOP_SET_FD + LOOP_SET_STATUS"
+
+endchoice

@@ -7,7 +7,7 @@
  * Licensed under GPLv2, see file LICENSE in this source tree.
  */
 //config:config ACPID
-//config:	bool "acpid (9 kb)"
+//config:	bool "acpid (9.3 kb)"
 //config:	default y
 //config:	help
 //config:	acpid listens to ACPI events coming either in textual form from
@@ -145,7 +145,7 @@ struct globals {
 static void process_event(const char *event)
 {
 	struct stat st;
-	char *handler = xasprintf("./%s", event);
+	char *handler = concat_path_file(".", event);
 	const char *args[] = { "run-parts", handler, NULL };
 
 	// log the event

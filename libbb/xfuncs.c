@@ -23,6 +23,7 @@
 #include "libbb.h"
 
 /* Turn on nonblocking I/O on a fd */
+#if !ENABLE_PLATFORM_MINGW32
 int FAST_FUNC ndelay_on(int fd)
 {
 	int flags = fcntl(fd, F_GETFL);
@@ -45,6 +46,7 @@ void FAST_FUNC close_on_exec_on(int fd)
 {
 	fcntl(fd, F_SETFD, FD_CLOEXEC);
 }
+#endif
 
 char* FAST_FUNC strncpy_IFNAMSIZ(char *dst, const char *src)
 {
@@ -176,50 +178,14 @@ char* FAST_FUNC hex2bin(char *dst, const char *str, int count)
 	return dst;
 }
 
-/* Return how long the file at fd is, if there's any way to determine it. */
-#ifdef UNUSED
-off_t FAST_FUNC fdlength(int fd)
-{
-	off_t bottom = 0, top = 0, pos;
-	long size;
-
-	// If the ioctl works for this, return it.
-
-	if (ioctl(fd, BLKGETSIZE, &size) >= 0) return size*512;
-
-	// FIXME: explain why lseek(SEEK_END) is not used here!
-
-	// If not, do a binary search for the last location we can read.  (Some
-	// block devices don't do BLKGETSIZE right.)
-
-	do {
-		char temp;
-
-		pos = bottom + (top - bottom) / 2;
-
-		// If we can read from the current location, it's bigger.
-
-		if (lseek(fd, pos, SEEK_SET)>=0 && safe_read(fd, &temp, 1)==1) {
-			if (bottom == top) bottom = top = (top+1) * 2;
-			else bottom = pos;
-
-		// If we can't, it's smaller.
-		} else {
-			if (bottom == top) {
-				if (!top) return 0;
-				bottom = top/2;
-			}
-			else top = pos;
-		}
-	} while (bottom + 1 != top);
-
-	return pos + 1;
-}
-#endif
-
 int FAST_FUNC bb_putchar_stderr(char ch)
 {
+#if ENABLE_PLATFORM_MINGW32 && !defined(_UCRT)
+	// Workaround for problems with stderr in MSVCRT
+	return fputc(ch, stderr);
+#else
 	return write(STDERR_FILENO, &ch, 1);
+#endif
 }
 
 ssize_t FAST_FUNC full_write1_str(const char *str)
@@ -311,13 +277,12 @@ int FAST_FUNC is_TERM_dumb(void)
 	return term && strcmp(term, "dumb") == 0;
 }
 
-#if !ENABLE_PLATFORM_MINGW32
 int FAST_FUNC tcsetattr_stdin_TCSANOW(const struct termios *tp)
 {
 	return tcsetattr(STDIN_FILENO, TCSANOW, tp);
 }
 
-int FAST_FUNC get_termios_and_make_raw(int fd, struct termios *newterm, struct termios *oldterm, int flags)
+int FAST_FUNC get_termios_and_make_raw(int fd, struct termios *newterm, struct termios *oldterm, int flags IF_PLATFORM_MINGW32(UNUSED_PARAM))
 {
 //TODO: slattach, shell read might be adapted to use this too: grep for "tcsetattr", "[VTIME] = 0"
 	int r;
@@ -326,6 +291,10 @@ int FAST_FUNC get_termios_and_make_raw(int fd, struct termios *newterm, struct t
 	r = tcgetattr(fd, oldterm);
 	*newterm = *oldterm;
 
+#if ENABLE_PLATFORM_MINGW32
+	newterm->w_mode &=
+		~(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT);
+#else
 	/* Turn off buffered input (ICANON)
 	 * Turn off echoing (ECHO)
 	 * and separate echoing of newline (ECHONL, normally off anyway)
@@ -382,6 +351,7 @@ int FAST_FUNC get_termios_and_make_raw(int fd, struct termios *newterm, struct t
 		 */
 		newterm->c_iflag &= ~(IXOFF|IXON|IXANY|BRKINT|INLCR|ICRNL|IUCLC|IMAXBEL);
 	}
+#endif
 	return r;
 }
 
@@ -392,7 +362,6 @@ int FAST_FUNC set_termios_to_raw(int fd, struct termios *oldterm, int flags)
 	get_termios_and_make_raw(fd, &newterm, oldterm, flags);
 	return tcsetattr(fd, TCSANOW, &newterm);
 }
-#endif
 
 pid_t FAST_FUNC safe_waitpid(pid_t pid, int *wstat, int options)
 {
@@ -436,4 +405,14 @@ void FAST_FUNC exit_SUCCESS(void)
 void FAST_FUNC _exit_SUCCESS(void)
 {
 	_exit(EXIT_SUCCESS);
+}
+
+void FAST_FUNC exit_FAILURE(void)
+{
+	exit(EXIT_FAILURE);
+}
+
+void FAST_FUNC _exit_FAILURE(void)
+{
+	_exit(EXIT_FAILURE);
 }

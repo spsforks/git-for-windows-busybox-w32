@@ -7,7 +7,7 @@
  * Licensed under GPLv2, see file LICENSE in this source tree.
  */
 //config:config FREE
-//config:	bool "free (3.1 kb)"
+//config:	bool "free (3.8 kb)"
 //config:	default y
 //config:	help
 //config:	free displays the total amount of free and used physical and swap
@@ -105,7 +105,7 @@ static NOINLINE unsigned int parse_meminfo(struct globals *g)
 	return seen_cached_and_available_and_reclaimable == 0;
 }
 #else
-static NOINLINE unsigned int parse_meminfo(struct globals *g)
+static unsigned int parse_meminfo(struct globals *g)
 {
 	g->cached_kb = g->available_kb = g->reclaimable_kb = 0;
 

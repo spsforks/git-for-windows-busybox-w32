@@ -11,18 +11,158 @@
 #define STR1(s) #s
 #define STR(s) STR1(s)
 
-#define NEED_SHA512 (ENABLE_SHA512SUM || ENABLE_USE_BB_CRYPT_SHA)
+#define NEED_SHA512 (ENABLE_SHA512SUM || ENABLE_SHA384SUM || ENABLE_USE_BB_CRYPT_SHA)
+
+#if ENABLE_FEATURE_USE_CNG_API
+# include <windows.h>
+# include <bcrypt.h>
+
+/*
+ * Requests an algorithm handle from the store,
+ * or creates it if it does not exist.
+ */
+
+BCRYPT_ALG_HANDLE get_alg_handle(enum cng_algorithm_identifier algorithm_identifier, bool hmac)
+{
+	const wchar_t *alg_id_mappings[] = {
+		BCRYPT_MD5_ALGORITHM,
+		BCRYPT_SHA1_ALGORITHM,
+		BCRYPT_SHA256_ALGORITHM,
+		BCRYPT_SHA384_ALGORITHM,
+		BCRYPT_SHA512_ALGORITHM
+	};
+	static BCRYPT_ALG_HANDLE algorithm_provider_cache[5] = {
+		INVALID_HANDLE_VALUE,
+		INVALID_HANDLE_VALUE,
+		INVALID_HANDLE_VALUE,
+		INVALID_HANDLE_VALUE,
+		INVALID_HANDLE_VALUE
+	};
+	static BCRYPT_ALG_HANDLE algorithm_provider_hmac_cache[5] = {
+		INVALID_HANDLE_VALUE,
+		INVALID_HANDLE_VALUE,
+		INVALID_HANDLE_VALUE,
+		INVALID_HANDLE_VALUE,
+		INVALID_HANDLE_VALUE
+		};
+	BCRYPT_ALG_HANDLE *cache;
+	NTSTATUS status;
+
+	cache = hmac ? algorithm_provider_hmac_cache : algorithm_provider_cache;
+	if (cache[algorithm_identifier] != INVALID_HANDLE_VALUE) {
+		return cache[algorithm_identifier];
+	}
+	status = BCryptOpenAlgorithmProvider(&cache[algorithm_identifier],
+		alg_id_mappings[algorithm_identifier], NULL,
+		hmac ? BCRYPT_ALG_HANDLE_HMAC_FLAG : 0);
+	mingw_die_if_error(status, "BCryptOpenAlgorithmProvider");
+
+	return cache[algorithm_identifier];
+}
+
+/* Initialize structure containing state of computation.
+ * (RFC 1321, 3.3: Step 3)
+ */
+
+static void generic_init(bcrypt_hash_ctx_t *ctx, BCRYPT_ALG_HANDLE alg_handle) {
+	DWORD hash_object_length = 0;
+	ULONG _unused;
+	NTSTATUS status;
+
+	status = BCryptGetProperty(alg_handle, BCRYPT_OBJECT_LENGTH, (PUCHAR)&hash_object_length, sizeof(DWORD), &_unused, 0);
+	mingw_die_if_error(status, "BCryptGetProperty");
+	status = BCryptGetProperty(alg_handle, BCRYPT_HASH_LENGTH, (PUCHAR)&ctx->output_size, sizeof(DWORD), &_unused, 0);
+	mingw_die_if_error(status, "BCryptGetProperty");
+
+
+	ctx->hash_obj = xmalloc(hash_object_length);
+
+	status = BCryptCreateHash(alg_handle, &ctx->handle, ctx->hash_obj, hash_object_length, NULL, 0, 0);
+	mingw_die_if_error(status, "BCryptCreateHash");
+}
+
+void FAST_FUNC md5_begin(md5_ctx_t *ctx)
+{
+	generic_init(ctx, get_alg_handle(CNG_ALG_ID_MD5, false));
+}
+
+void FAST_FUNC sha1_begin(sha1_ctx_t *ctx)
+{
+	generic_init(ctx, get_alg_handle(CNG_ALG_ID_SHA1, false));
+}
+
+/* Initialize structure containing state of computation.
+   (FIPS 180-2:5.3.2)  */
+void FAST_FUNC sha256_begin(sha256_ctx_t *ctx)
+{
+	generic_init(ctx, get_alg_handle(CNG_ALG_ID_SHA256, false));
+}
+
+#if ENABLE_SHA384SUM
+/* Initialize structure containing state of computation.
+   (FIPS 180-2:5.3.3)  */
+void FAST_FUNC sha384_begin(sha384_ctx_t *ctx)
+{
+	generic_init(ctx, get_alg_handle(CNG_ALG_ID_SHA384, false));
+}
+#endif /* ENABLE_SHA384SUM */
+
+#if NEED_SHA512
+/* Initialize structure containing state of computation.
+   (FIPS 180-2:5.3.4)  */
+void FAST_FUNC sha512_begin(sha512_ctx_t *ctx)
+{
+	generic_init(ctx, get_alg_handle(CNG_ALG_ID_SHA512, false));
+}
+#endif /* NEED_SHA512 */
+
+void FAST_FUNC generic_hash(bcrypt_hash_ctx_t *ctx, const void *buffer, size_t len)
+{
+	/*
+		for perf, no error checking here
+	*/
+	/*NTSTATUS status = */ BCryptHashData(ctx->handle, (const PUCHAR)buffer, len, 0);
+	// mingw_die_if_error(status, "BCryptHashData");
+}
+
+unsigned FAST_FUNC generic_end(bcrypt_hash_ctx_t *ctx, void *resbuf)
+{
+	NTSTATUS status = BCryptFinishHash(ctx->handle, resbuf, ctx->output_size, 0);
+	mingw_die_if_error(status, "BCryptFinishHash");
+	BCryptDestroyHash(ctx->handle);
+	free(ctx->hash_obj);
+	return ctx->output_size;
+}
+#endif /* !ENABLE_FEATURE_USE_CNG_API */
 
 #if ENABLE_SHA1_HWACCEL || ENABLE_SHA256_HWACCEL
 # if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
-static void cpuid(unsigned *eax, unsigned *ebx, unsigned *ecx, unsigned *edx)
+static void cpuid_eax_ebx_ecx(unsigned *eax, unsigned *ebx, unsigned *ecx, unsigned *edx)
 {
 	asm ("cpuid"
 		: "=a"(*eax), "=b"(*ebx), "=c"(*ecx), "=d"(*edx)
-		: "0"(*eax),  "1"(*ebx),  "2"(*ecx),  "3"(*edx)
+		: "0" (*eax), "1" (*ebx), "2" (*ecx)
 	);
 }
 static smallint shaNI;
+static NOINLINE int get_shaNI(void)
+{
+	/* Get leaf 7 subleaf 0. Exists on all CPUs since Merom (2006).
+	 * "If a value entered for CPUID.EAX is higher than the maximum
+	 * input value for basic or extended function for that processor
+	 * then the data for the highest basic information leaf is returned".
+	 * This means that Pentiums 4 would return leaf 5 or 6 instead of 7,
+	 * which happen to have zero in EBX bit 29. Thus they should work too.
+	 */
+	unsigned eax = 7;
+	unsigned ecx = 0;
+	unsigned ebx = 0; /* should not be needed, paranoia */
+	unsigned edx;
+	cpuid_eax_ebx_ecx(&eax, &ebx, &ecx, &edx);
+	ebx = ((ebx >> 28) & 2) - 1; /* bit 29 -> 1 or -1 */
+	shaNI = (int)ebx;
+	return (int)ebx;
+}
 void FAST_FUNC sha1_process_block64_shaNI(sha1_ctx_t *ctx);
 void FAST_FUNC sha256_process_block64_shaNI(sha256_ctx_t *ctx);
 #  if defined(__i386__)
@@ -62,6 +202,7 @@ static ALWAYS_INLINE uint64_t rotl64(uint64_t x, unsigned n)
 	return (x << n) | (x >> (64 - n));
 }
 
+#if !ENABLE_FEATURE_USE_CNG_API
 /* Process the remaining bytes in the buffer */
 static void FAST_FUNC common64_end(md5_ctx_t *ctx, int swap_needed)
 {
@@ -1014,7 +1155,7 @@ static const sha_K_int sha_K[] ALIGN8 = {
 	K(0x84c87814a1f0ab72ULL), K(0x8cc702081a6439ecULL),
 	K(0x90befffa23631e28ULL), K(0xa4506cebde82bde9ULL),
 	K(0xbef9a3f7b2c67915ULL), K(0xc67178f2e372532bULL),
-#if NEED_SHA512  /* [64]+ are used for sha512 only */
+#if NEED_SHA512  /* [64]+ are used for sha384 and sha512 only */
 	K(0xca273eceea26619cULL), K(0xd186b8c721c0c207ULL),
 	K(0xeada7dd6cde0eb1eULL), K(0xf57d4f7fee6ed178ULL),
 	K(0x06f067aa72176fbaULL), K(0x0a637dc5a2c898a6ULL),
@@ -1175,12 +1316,10 @@ void FAST_FUNC sha1_begin(sha1_ctx_t *ctx)
 #if ENABLE_SHA1_HWACCEL
 # if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
 	{
-		if (!shaNI) {
-			unsigned eax = 7, ebx = ebx, ecx = 0, edx = edx;
-			cpuid(&eax, &ebx, &ecx, &edx);
-			shaNI = ((ebx >> 29) << 1) - 1;
-		}
-		if (shaNI > 0)
+		int ni = shaNI;
+		if (!ni)
+			ni = get_shaNI();
+		if (ni > 0)
 			ctx->process_block = sha1_process_block64_shaNI;
 	}
 # endif
@@ -1213,11 +1352,20 @@ static const uint32_t init512_lo[] ALIGN4 = {
 	0x137e2179,
 };
 #endif /* NEED_SHA512 */
-
-// Note: SHA-384 is identical to SHA-512, except that initial hash values are
-// 0xcbbb9d5dc1059ed8, 0x629a292a367cd507, 0x9159015a3070dd17, 0x152fecd8f70e5939,
-// 0x67332667ffc00b31, 0x8eb44a8768581511, 0xdb0c2e0d64f98fa7, 0x47b5481dbefa4fa4,
-// and the output is constructed by omitting last two 64-bit words of it.
+#if ENABLE_SHA384SUM
+static const uint64_t init384[] ALIGN8 = {
+	0,
+	0,
+	0xcbbb9d5dc1059ed8,
+	0x629a292a367cd507,
+	0x9159015a3070dd17,
+	0x152fecd8f70e5939,
+	0x67332667ffc00b31,
+	0x8eb44a8768581511,
+	0xdb0c2e0d64f98fa7,
+	0x47b5481dbefa4fa4,
+};
+#endif
 
 /* Initialize structure containing state of computation.
    (FIPS 180-2:5.3.2)  */
@@ -1229,21 +1377,29 @@ void FAST_FUNC sha256_begin(sha256_ctx_t *ctx)
 #if ENABLE_SHA256_HWACCEL
 # if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
 	{
-		if (!shaNI) {
-			unsigned eax = 7, ebx = ebx, ecx = 0, edx = edx;
-			cpuid(&eax, &ebx, &ecx, &edx);
-			shaNI = ((ebx >> 29) << 1) - 1;
-		}
-		if (shaNI > 0)
+		int ni = shaNI;
+		if (!ni)
+			ni = get_shaNI();
+		if (ni > 0)
 			ctx->process_block = sha256_process_block64_shaNI;
 	}
 # endif
 #endif
 }
 
-#if NEED_SHA512
+#if ENABLE_SHA384SUM
 /* Initialize structure containing state of computation.
    (FIPS 180-2:5.3.3)  */
+void FAST_FUNC sha384_begin(sha512_ctx_t *ctx)
+{
+	memcpy(&ctx->total64, init384, sizeof(init384));
+	/*ctx->total64[0] = ctx->total64[1] = 0; - already done */
+}
+#endif
+
+#if NEED_SHA512
+/* Initialize structure containing state of computation.
+   (FIPS 180-2:5.3.4)  */
 void FAST_FUNC sha512_begin(sha512_ctx_t *ctx)
 {
 	int i;
@@ -1296,7 +1452,16 @@ unsigned FAST_FUNC sha1_end(sha1_ctx_t *ctx, void *resbuf)
 	/* SHA stores total in BE, need to swap on LE arches: */
 	common64_end(ctx, /*swap_needed:*/ BB_LITTLE_ENDIAN);
 
-	hash_size = (ctx->process_block == sha1_process_block64) ? 5 : 8;
+	hash_size = 8;
+	if (ctx->process_block == sha1_process_block64
+#if ENABLE_SHA1_HWACCEL
+# if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
+	 || ctx->process_block == sha1_process_block64_shaNI
+# endif
+#endif
+	) {
+		hash_size = 5;
+	}
 	/* This way we do not impose alignment constraints on resbuf: */
 	if (BB_LITTLE_ENDIAN) {
 		unsigned i;
@@ -1309,7 +1474,7 @@ unsigned FAST_FUNC sha1_end(sha1_ctx_t *ctx, void *resbuf)
 }
 
 #if NEED_SHA512
-unsigned FAST_FUNC sha512_end(sha512_ctx_t *ctx, void *resbuf)
+static unsigned FAST_FUNC sha512384_end(sha512_ctx_t *ctx, void *resbuf, unsigned outsize)
 {
 	unsigned bufpos = ctx->total64[0] & 127;
 
@@ -1340,11 +1505,22 @@ unsigned FAST_FUNC sha512_end(sha512_ctx_t *ctx, void *resbuf)
 		for (i = 0; i < ARRAY_SIZE(ctx->hash); ++i)
 			ctx->hash[i] = SWAP_BE64(ctx->hash[i]);
 	}
-	memcpy(resbuf, ctx->hash, sizeof(ctx->hash));
-	return sizeof(ctx->hash);
+	memcpy(resbuf, ctx->hash, outsize);
+	return outsize;
+}
+unsigned FAST_FUNC sha512_end(sha384_ctx_t *ctx, void *resbuf)
+{
+	return sha512384_end(ctx, resbuf, SHA512_OUTSIZE);
 }
 #endif /* NEED_SHA512 */
 
+#if ENABLE_SHA384SUM
+unsigned FAST_FUNC sha384_end(sha384_ctx_t *ctx, void *resbuf)
+{
+	return sha512384_end(ctx, resbuf, SHA384_OUTSIZE);
+}
+#endif
+#endif /* !ENABLE_FEATURE_USE_CNG_API */
 
 /*
  * The Keccak sponge function, designed by Guido Bertoni, Joan Daemen,
@@ -1881,6 +2057,8 @@ void FAST_FUNC sha3_hash(sha3_ctx_t *ctx, const void *buffer, size_t len)
 
 unsigned FAST_FUNC sha3_end(sha3_ctx_t *ctx, void *resbuf)
 {
+	unsigned hash_len;
+
 	/* Padding */
 	uint8_t *buf = (uint8_t*)ctx->state;
 	/*
@@ -1903,6 +2081,7 @@ unsigned FAST_FUNC sha3_end(sha3_ctx_t *ctx, void *resbuf)
 	sha3_process_block72(ctx->state);
 
 	/* Output */
-	memcpy(resbuf, ctx->state, 64);
-	return 64;
+	hash_len = (1600/8 - ctx->input_block_bytes) / 2;
+	memcpy(resbuf, ctx->state, hash_len);
+	return hash_len;
 }

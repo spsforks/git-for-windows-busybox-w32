@@ -500,7 +500,7 @@ static pid_t run(const struct init_action *a)
 
 	/* Open the new terminal device */
 	if (!open_stdio_to_tty(a->terminal))
-		_exit(EXIT_FAILURE);
+		_exit_FAILURE();
 
 	/* NB: on NOMMU we can't wait for input in child, so
 	 * "askfirst" will work the same as "respawn". */
@@ -1198,17 +1198,29 @@ int init_main(int argc UNUSED_PARAM, char **argv)
 		/* Wait for any child process(es) to exit */
 		while (1) {
 			pid_t wpid;
+			int status;
 			struct init_action *a;
 
-			wpid = waitpid(-1, NULL, WNOHANG);
+			wpid = wait_any_nohang(&status);
 			if (wpid <= 0)
 				break;
 
 			a = mark_terminated(wpid);
 			if (a) {
-				message(L_LOG, "process '%s' (pid %u) exited. "
+				const char *s = "killed, signal";
+				int ex = WTERMSIG(status);
+				/* "if (!WIFSIGNALED(status))" generates more code:
+				 * on linux, WIFEXITED(status) is "WTERMSIG(status) == 0"
+				 * and WTERMSIG(status) is known, so compiler optimizes.
+				 */
+				if (WIFEXITED(status)) {
+					s = "exited, exitcode";
+					ex = WEXITSTATUS(status);
+				}
+				message(L_LOG, "process '%s' (pid %u) %s:%d. "
 						"Scheduling for restart.",
-						a->command, (unsigned)wpid);
+						a->command, (unsigned)wpid,
+						s, ex);
 			}
 		}
 

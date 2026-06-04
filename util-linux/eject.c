@@ -13,7 +13,7 @@
  * Most of the dirty work blatantly ripped off from cat.c =)
  */
 //config:config EJECT
-//config:	bool "eject (4 kb)"
+//config:	bool "eject (4.3 kb)"
 //config:	default y
 //config:	help
 //config:	Used to eject cdroms. (defaults to /dev/cdrom)
@@ -31,7 +31,7 @@
 //kbuild:lib-$(CONFIG_EJECT) += eject.o
 
 //usage:#define eject_trivial_usage
-//usage:       "[-t] [-T] [DEVICE]"
+//usage:       IF_FEATURE_EJECT_SCSI("[-s] ") "[-t] [-T] [DEVICE]"
 //usage:#define eject_full_usage "\n\n"
 //usage:       "Eject DEVICE or default /dev/cdrom\n"
 //usage:	IF_FEATURE_EJECT_SCSI(

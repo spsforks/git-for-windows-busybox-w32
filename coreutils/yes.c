@@ -11,7 +11,7 @@
  * Size reductions and removed redundant applet name prefix from error messages.
  */
 //config:config YES
-//config:	bool "yes (1.2 kb)"
+//config:	bool "yes (1.5 kb)"
 //config:	default y
 //config:	help
 //config:	yes is used to repeatedly output a specific string, or
@@ -41,10 +41,6 @@ int yes_main(int argc UNUSED_PARAM, char **argv)
 		++argv;
 
 	do {
-#if ENABLE_PLATFORM_MINGW32
-		if (ferror(stdout) != 0)
-			break;
-#endif
 		pp = argv;
 		while (1) {
 			fputs_stdout(*pp);

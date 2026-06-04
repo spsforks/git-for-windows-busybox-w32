@@ -4,7 +4,7 @@
  * Licensed under GPLv2, see LICENSE in this source tree
  */
 //config:config NPROC
-//config:	bool "nproc (3.7 kb)"
+//config:	bool "nproc (3.9 kb)"
 //config:	default y
 //config:	help
 //config:	Print number of CPUs
@@ -23,15 +23,12 @@
 //usage:     "\n	--ignore=N	Exclude N CPUs"
 //usage:	)
 
-#include <sched.h>
 #include "libbb.h"
 
 int nproc_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
 int nproc_main(int argc UNUSED_PARAM, char **argv UNUSED_PARAM)
 {
-#if !ENABLE_PLATFORM_MINGW32
-	unsigned long mask[1024];
-#else
+#if ENABLE_PLATFORM_MINGW32
 	DWORD_PTR affinity, process_affinity, system_affinity;
 #endif
 	int count = 0;
@@ -59,22 +56,22 @@ int nproc_main(int argc UNUSED_PARAM, char **argv UNUSED_PARAM)
 		}
 	} else
 #endif
-	if (sched_getaffinity(0, sizeof(mask), (void*)mask) == 0) {
+	{
 		int i;
-		for (i = 0; i < ARRAY_SIZE(mask); i++) {
-			unsigned long m = mask[i];
-			while (m) {
-				if (m & 1)
-					count++;
-				m >>= 1;
-			}
+		unsigned sz = 2 * 1024;
+		unsigned long *mask = get_malloc_cpu_affinity(0, &sz);
+		sz /= sizeof(long);
+		for (i = 0; i < sz; i++) {
+			if (mask[i] != 0) /* most mask[i] are usually 0 */
+				count += bb_popcnt_long(mask[i]);
 		}
+		IF_FEATURE_CLEAN_UP(free(mask);)
 	}
 #else /* ENABLE_PLATFORM_MINGW32 */
 	if (GetProcessAffinityMask(GetCurrentProcess(), &process_affinity,
 					&system_affinity)) {
-		affinity = (ENABLE_LONG_OPTS && opts & (1 << 1)) ?
-						system_affinity : process_affinity;
+		affinity = IF_LONG_OPTS((opts & (1 << 1)) ? system_affinity :)
+						process_affinity;
 		while (affinity) {
 			count += affinity & 1;
 			affinity >>= 1;

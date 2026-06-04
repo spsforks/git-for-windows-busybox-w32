@@ -21,7 +21,7 @@
  * [file] which file to patch
  */
 //config:config PATCH
-//config:	bool "patch (9.4 kb)"
+//config:	bool "patch (9.6 kb)"
 //config:	default y
 //config:	help
 //config:	Apply a unified diff formatted patch.
@@ -57,6 +57,9 @@ struct double_list {
 	struct double_list *next;
 	struct double_list *prev;
 	char *data;
+#if ENABLE_PLATFORM_MINGW32
+	int no_newline;
+#endif
 };
 
 // Free all the elements of a linked list
@@ -76,7 +79,11 @@ static void dlist_free(struct double_list *list, void (*freeit)(void *data))
 static struct double_list *dlist_add(struct double_list **list, char *data)
 {
 	struct double_list *llist;
+#if ENABLE_PLATFORM_MINGW32
+	struct double_list *line = xzalloc(sizeof(*line));
+#else
 	struct double_list *line = xmalloc(sizeof(*line));
+#endif
 
 	line->data = data;
 	llist = *list;
@@ -138,9 +145,12 @@ static void do_line(void *data)
 {
 	struct double_list *dlist = data;
 
-	if (TT.state>1 && *dlist->data != TT.state)
+	if (TT.state > 1 && *dlist->data != TT.state)
 		fdprintf(TT.state == 2 ? 2 : TT.fileout,
-			"%s\n", dlist->data+(TT.state>3 ? 1 : 0));
+#if ENABLE_PLATFORM_MINGW32
+			dlist->no_newline && TT.state != 2 ? "%s" :
+#endif
+			"%s\n", dlist->data + (TT.state > 3 ? 1 : 0));
 
 	if (PATCH_DEBUG) fdprintf(2, "DO %d: %s\n", TT.state, dlist->data);
 
@@ -221,7 +231,7 @@ static int apply_one_hunk(void)
 
 	// Match EOF if there aren't as many ending context lines as beginning
 	for (plist = TT.current_hunk; plist; plist = plist->next) {
-		if (plist->data[0]==' ') matcheof++;
+		if (plist->data[0] == ' ') matcheof++;
 		else matcheof = 0;
 		if (PATCH_DEBUG) fdprintf(2, "HUNK:%s\n", plist->data);
 	}
@@ -433,19 +443,49 @@ int patch_main(int argc UNUSED_PARAM, char **argv)
 
 		// Are we assembling a hunk?
 		if (state >= 2) {
-			if (*patchline==' ' || *patchline=='+' || *patchline=='-') {
+#if ENABLE_PLATFORM_MINGW32
+			switch (*patchline) {
+			case '\\':
+				// '\ No newline at end of file' detected, mark
+				// previous line, if it exists.
+				if (TT.current_hunk->prev)
+					TT.current_hunk->prev->no_newline = TRUE;
+				free(patchline);
+				continue;
+			case ' ':
+			case '+':
+			case '-':
+#else
+		if (*patchline == ' ' || *patchline == '+' || *patchline == '-') {
+#endif
 				dlist_add(&TT.current_hunk, patchline);
 
 				if (*patchline != '+') oldlen--;
 				if (*patchline != '-') newlen--;
 
 				// Context line?
-				if (*patchline==' ' && state==2) TT.context++;
-				else state=3;
+				if (*patchline == ' ' && state == 2) TT.context++;
+				else state = 3;
 
 				// If we've consumed all expected hunk lines, apply the hunk.
 
+#if ENABLE_PLATFORM_MINGW32
+				if (!oldlen && !newlen) {
+					// Peek ahead for '\ No newline at end of file'
+					int c = getchar();
+					ungetc(c, stdin);
+					if (c == '\\') {
+						if (TT.current_hunk->prev)
+							TT.current_hunk->prev->no_newline = TRUE;
+						do {
+							c = getchar();
+						} while (c != EOF && c != '\n');
+					}
+					state = apply_one_hunk();
+				}
+#else
 				if (!oldlen && !newlen) state = apply_one_hunk();
+#endif
 				continue;
 			}
 			fail_hunk();
@@ -469,9 +509,9 @@ int patch_main(int argc UNUSED_PARAM, char **argv)
 				free(*name);
 				// Trim date from end of filename (if any).  We don't care.
 				for (s = patchline+4; *s && *s!='\t'; s++)
-					if (*s=='\\' && s[1]) s++;
+					if (*s == '\\' && s[1]) s++;
 				i = atoi(s);
-				if (i>1900 && i<=1970)
+				if (i > 1900 && i <= 1970)
 					*name = xstrdup("/dev/null");
 				else {
 					*s = 0;

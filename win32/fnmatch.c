@@ -16,8 +16,13 @@
    write to the Free Software Foundation, Inc., 59 Temple Place - Suite 330,
    Boston, MA 02111-1307, USA.  */
 
+/* enable/disable the whole file.
+ * only one of win32/fnmatch.c and win32/fnmatch2.c should be enabled.
+ */
+#if 0
+
 #include <platform.h>
-#include "match_class.h"
+#include "actype.h"
 
 #if HAVE_CONFIG_H
 # include <config.h>
@@ -373,57 +378,15 @@ internal_fnmatch (const char *pattern, const char *string,
 		    if (__iswctype (__btowc ((unsigned char) *n), wt))
 		      goto matched;
 # else
-			switch (match_class(str)) {
-		    case CCLASS_ALNUM:
-				if (ISALNUM ((unsigned char) *n))
-					goto matched;
-				break;
-			case CCLASS_ALPHA:
-				if (ISALPHA ((unsigned char) *n))
-					goto matched;
-				break;
-			case CCLASS_BLANK:
-				if (ISBLANK ((unsigned char) *n))
-					goto matched;
-				break;
-			case CCLASS_CNTRL:
-				if (ISCNTRL ((unsigned char) *n))
-					goto matched;
-				break;
-			case CCLASS_DIGIT:
-				if (ISDIGIT ((unsigned char) *n))
-					goto matched;
-				break;
-			case CCLASS_GRAPH:
-				if (ISGRAPH ((unsigned char) *n))
-					goto matched;
-				break;
-			case CCLASS_LOWER:
-				if (ISLOWER ((unsigned char) *n))
-					goto matched;
-				break;
-			case CCLASS_PRINT:
-				if (ISPRINT ((unsigned char) *n))
-					goto matched;
-				break;
-			case CCLASS_PUNCT:
-				if (ISPUNCT ((unsigned char) *n))
-					goto matched;
-				break;
-			case CCLASS_SPACE:
-				if (ISSPACE ((unsigned char) *n))
-					goto matched;
-				break;
-			case CCLASS_UPPER:
-				if (ISUPPER ((unsigned char) *n))
-					goto matched;
-				break;
-			case CCLASS_XDIGIT:
-				if (ISXDIGIT ((unsigned char) *n))
-					goto matched;
-				break;
-			}
-			c = *p++;
+		    /* note: the equivalent wctype code above returns
+		     * FNM_NOMATCH for unknown name, while here we consider
+		     * it as simply non-matched class (and only if ASCII).
+		     */
+		    if (ISASCII((unsigned char) *n))
+		      if (isactype((unsigned char) *n, actype(str)))
+		        goto matched;
+
+		    c = *p++;
 # endif
 		  }
 		else if (c == '\0')
@@ -523,3 +486,4 @@ fnmatch (const char *pattern, const char *string, int flags)
 }
 
 #endif	/* _LIBC or not __GNU_LIBRARY__.  */
+#endif /* whole file */

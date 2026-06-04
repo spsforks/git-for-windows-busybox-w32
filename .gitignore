@@ -23,7 +23,6 @@ Config.in
 /busybox_old
 /busybox_old.exe
 /busybox_unstripped*
-win32/resources/busybox-w32.manifest
 
 #
 # Backups / patches
@@ -65,3 +64,8 @@ TAGS
 # user-supplied scripts
 #
 /embed
+
+#
+# release description for tarball
+#
+.frp_describe

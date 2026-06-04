@@ -28,7 +28,7 @@
  * rewrite  14-11-2008 vda
  */
 //config:config TIMEOUT
-//config:	bool "timeout (6 kb)"
+//config:	bool "timeout (6.5 kb)"
 //config:	default y
 //config:	help
 //config:	Runs a program and watches it. If it does not terminate in
@@ -42,8 +42,8 @@
 //usage:       "[-s SIG] [-k KILL_SECS] SECS PROG ARGS"
 //usage:#define timeout_full_usage "\n\n"
 //usage:       "Run PROG. Send SIG to it if it is not gone in SECS seconds.\n"
-//usage:       IF_NOT_PLATFORM_MINGW32("Default SIG: TERM.")
-//usage:       IF_PLATFORM_MINGW32("Default SIG: TERM.\n")
+//usage:       "Default SIG: TERM."
+//usage:       IF_PLATFORM_MINGW32("\n")
 //usage:       "If it still exists in KILL_SECS seconds, send KILL.\n"
 
 #include "libbb.h"
@@ -54,32 +54,34 @@ static HANDLE child = INVALID_HANDLE_VALUE;
 static void kill_child(void)
 {
 	if (child != INVALID_HANDLE_VALUE) {
-		kill_SIGTERM_by_handle(child);
+		pid_t pid = (pid_t)GetProcessId(child);
+		if (pid)
+			kill(pid, SIGTERM);
 	}
 }
 
 /* Return TRUE if child exits before timeout expires */
-static NOINLINE int timeout_wait(int timeout, HANDLE proc, DWORD *status)
+static NOINLINE int timeout_wait(duration_t timeout, HANDLE proc, DWORD *status)
 {
-	/* Just sleep(HUGE_NUM); kill(parent) may kill wrong process! */
-	while (1) {
-		sleep1();
-		if (--timeout <= 0)
-			break;
-		if (WaitForSingleObject(proc, 0) == WAIT_OBJECT_0) {
-			/* process is gone */
-			GetExitCodeProcess(proc, status);
-			return TRUE;
-		}
+	DWORD t = (DWORD)(timeout * 1000);
+	if (WaitForSingleObject(proc, t) == WAIT_OBJECT_0) {
+		/* process is gone */
+		GetExitCodeProcess(proc, status);
+		return TRUE;
 	}
 	return FALSE;
 }
 #else
-static NOINLINE int timeout_wait(int timeout, pid_t pid)
+static NOINLINE int timeout_wait(duration_t timeout, pid_t pid)
 {
 	/* Just sleep(HUGE_NUM); kill(parent) may kill wrong process! */
 	while (1) {
-		sleep1();
+#if ENABLE_FLOAT_DURATION
+		if (timeout < 1)
+			sleep_for_duration(timeout);
+		else
+#endif
+			sleep1();
 		if (--timeout <= 0)
 			break;
 		if (kill(pid, 0)) {
@@ -97,13 +99,13 @@ int timeout_main(int argc UNUSED_PARAM, char **argv)
 	int signo;
 #if !ENABLE_PLATFORM_MINGW32
 	int status;
+	int parent = 0;
 #else
 	intptr_t ret;
 	DWORD status = EXIT_SUCCESS;
 #endif
-	int parent = 0;
-	int timeout;
-	int kill_timeout;
+	duration_t timeout;
+	duration_t kill_timeout;
 	pid_t pid;
 #if !BB_MMU
 	char *sv1, *sv2;
@@ -119,14 +121,18 @@ int timeout_main(int argc UNUSED_PARAM, char **argv)
 
 	/* -t SECONDS; -p PARENT_PID */
 	/* '+': stop at first non-option */
+#if !ENABLE_PLATFORM_MINGW32
 	getopt32(argv, "+s:k:" USE_FOR_NOMMU("p:+"), &opt_s, &opt_k, &parent);
+#else
+	getopt32(argv, "+s:k:", &opt_s, &opt_k);
+#endif
 	/*argv += optind; - no, wait for bb_daemonize_or_rexec! */
 
 	signo = get_signum(opt_s);
 #if !ENABLE_PLATFORM_MINGW32
 	if (signo < 0)
 #else
-	if (signo != SIGTERM && signo != SIGKILL && signo != 0)
+	if (!is_valid_signal(signo))
 #endif
 		bb_error_msg_and_die("unknown signal '%s'", opt_s);
 
@@ -207,13 +213,15 @@ int timeout_main(int argc UNUSED_PARAM, char **argv)
 	status = signo == SIGKILL ? 137 : 124;
 
 	pid = (pid_t)GetProcessId(child);
-	kill(pid, signo);
+	if (pid) {
+		kill(pid, signo);
 
-	if (kill_timeout > 0) {
-		if (timeout_wait(kill_timeout, child, &status))
-			goto finish;
-		kill(parent, SIGKILL);
-		status = 137;
+		if (kill_timeout > 0) {
+			if (timeout_wait(kill_timeout, child, &status))
+				goto finish;
+			kill(pid, SIGKILL);
+			status = 137;
+		}
 	}
  finish:
 	CloseHandle(child);

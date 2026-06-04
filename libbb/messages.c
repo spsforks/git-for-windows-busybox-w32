@@ -5,6 +5,9 @@
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
 #include "libbb.h"
+#if ENABLE_PLATFORM_MINGW32
+# include "BB_VER.h"
+#endif
 
 /* allow version to be extended, via CFLAGS */
 #ifndef BB_EXTRA_VERSION
@@ -33,14 +36,19 @@ const char bb_busybox_exec_path[] ALIGN1 = CONFIG_BUSYBOX_EXEC_PATH;
 /* Some special shell variables are placed in the environment immediately
  * when they're exported.
  *
- * BB_GLOBBING and BB_UMASK are excluded because users shouln't be
- * messing with them; BB_ALT_BUFFER and BB_FIX_BACKSLASH are excluded
- * because they only affect particular applets, not the shell itself.
+ * BB_GLOBBING and BB_UMASK are excluded because users shouldn't be
+ * messing with them; BB_FIX_BACKSLASH is excluded because it only
+ * affects particular applets, not the shell itself.
+ *
+ * If you change any of these you should also update the definitions in
+ * include/libbb.h.
  */
 const char bbvar[] ALIGN1 =
 		"BB_OVERRIDE_APPLETS\0" \
 		"BB_SKIP_ANSI_EMULATION\0" \
-		"BB_SYSTEMROOT\0";
+		"BB_TERMINAL_MODE\0" \
+		"BB_SYSTEMROOT\0" \
+		"BB_CRITICAL_ERROR_DIALOGS\0";
 #endif
 const char bb_default_login_shell[] ALIGN1 = LIBBB_DEFAULT_LOGIN_SHELL;
 /* util-linux manpage says /sbin:/bin:/usr/sbin:/usr/bin,

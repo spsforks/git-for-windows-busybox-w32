@@ -14,7 +14,7 @@
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
 //config:config MORE
-//config:	bool "more (7 kb)"
+//config:	bool "more (7.2 kb)"
 //config:	default y
 //config:	help
 //config:	more is a simple utility which allows you to read text one screen
@@ -62,14 +62,16 @@ static void tcsetattr_tty_TCSANOW(struct termios *settings)
 	tcsetattr(G.tty_fileno, TCSANOW, settings);
 }
 
+#if !ENABLE_PLATFORM_MINGW32
 static void gotsig(int sig UNUSED_PARAM)
 {
 	/* bb_putchar_stderr doesn't use stdio buffering,
 	 * therefore it is safe in signal handler */
 	bb_putchar_stderr('\n');
 	tcsetattr_tty_TCSANOW(&G.initial_settings);
-	_exit(EXIT_FAILURE);
+	_exit_FAILURE();
 }
+#endif
 
 #define CONVERTED_TAB_SIZE 8
 
@@ -87,11 +89,12 @@ int more_main(int argc UNUSED_PARAM, char **argv)
 	/* Parse options */
 	/* Accepted but ignored: */
 	/* -d	Display help instead of ringing bell */
+	/* -e   Exit immediately after writing the last line */
 	/* -f	Count logical lines (IOW: long lines are not folded) */
 	/* -l	Do not pause after any line containing a ^L (form feed) */
 	/* -s	Squeeze blank lines into one */
 	/* -u	Suppress underlining */
-	getopt32(argv, "dflsu");
+	getopt32(argv, "deflsu");
 	argv += optind;
 
 	/* Another popular pager, most, detects when stdout
@@ -158,12 +161,13 @@ int more_main(int argc UNUSED_PARAM, char **argv)
 				 * to get input from the user.
 				 */
 				for (;;) {
-#if !ENABLE_PLATFORM_MINGW32
 					fflush_all();
-					input = getc(tty);
-#else
-					input = _getch();
+#if ENABLE_PLATFORM_MINGW32
+					if (!(terminal_mode(FALSE) & VT_INPUT))
+						input = _getch();
+					else
 #endif
+					input = getc(tty);
 					input = tolower(input);
 					/* Erase the last message */
 					printf("\r%*s\r", len, "");

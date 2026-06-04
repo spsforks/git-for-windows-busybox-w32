@@ -7,13 +7,13 @@
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
 //config:config PGREP
-//config:	bool "pgrep (6.5 kb)"
+//config:	bool "pgrep (6.8 kb)"
 //config:	default y
 //config:	help
 //config:	Look for processes by name.
 //config:
 //config:config PKILL
-//config:	bool "pkill (7.5 kb)"
+//config:	bool "pkill (7.8 kb)"
 //config:	default y
 //config:	help
 //config:	Send signals to processes by name.
@@ -30,31 +30,50 @@
 //kbuild:lib-$(CONFIG_PKILL) += pgrep.o
 
 //usage:#define pgrep_trivial_usage
+//usage:     IF_NOT_PLATFORM_MINGW32(
 //usage:       "[-flanovx] [-s SID|-P PPID|PATTERN]"
+//usage:     )
+//usage:     IF_PLATFORM_MINGW32(
+//usage:       "[-lvx] [-P PPID|PATTERN]"
+//usage:     )
 //usage:#define pgrep_full_usage "\n\n"
 //usage:       "Display process(es) selected by regex PATTERN\n"
 //usage:     "\n	-l	Show command name too"
+//usage:     IF_NOT_PLATFORM_MINGW32(
 //usage:     "\n	-a	Show command line too"
 //usage:     "\n	-f	Match against entire command line"
 //usage:     "\n	-n	Show the newest process only"
 //usage:     "\n	-o	Show the oldest process only"
+//usage:     )
 //usage:     "\n	-v	Negate the match"
 //usage:     "\n	-x	Match whole name (not substring)"
+//usage:     IF_NOT_PLATFORM_MINGW32(
 //usage:     "\n	-s	Match session ID (0 for current)"
+//usage:     )
 //usage:     "\n	-P	Match parent process ID"
 //usage:
 //usage:#define pkill_trivial_usage
-//usage:       "[-l|-SIGNAL] [-xfvno] [-s SID|-P PPID|PATTERN]"
+//usage:     IF_NOT_PLATFORM_MINGW32(
+//usage:       "[-l|-SIGNAL] [-xfvnoe] [-s SID|-P PPID|PATTERN]"
+//usage:     )
+//usage:     IF_PLATFORM_MINGW32(
+//usage:       "[-l|-SIGNAL] [-xve] [-P PPID|PATTERN]"
+//usage:     )
 //usage:#define pkill_full_usage "\n\n"
 //usage:       "Send signal to processes selected by regex PATTERN\n"
 //usage:     "\n	-l	List all signals"
 //usage:     "\n	-x	Match whole name (not substring)"
+//usage:     IF_NOT_PLATFORM_MINGW32(
 //usage:     "\n	-f	Match against entire command line"
 //usage:     "\n	-s SID	Match session ID (0 for current)"
+//usage:     )
 //usage:     "\n	-P PPID	Match parent process ID"
 //usage:     "\n	-v	Negate the match"
+//usage:     IF_NOT_PLATFORM_MINGW32(
 //usage:     "\n	-n	Signal the newest process only"
 //usage:     "\n	-o	Signal the oldest process only"
+//usage:     )
+//usage:     "\n	-e	Display name and PID of the process being killed"
 
 #include "libbb.h"
 #include "xregex.h"
@@ -64,26 +83,50 @@
 #define pkill (ENABLE_PKILL && (!ENABLE_PGREP || applet_name[1] == 'k'))
 
 enum {
-	/* "vlafxons:+P:+" */
+	/* "vlafxones:+P:+" */
 	OPTBIT_V = 0, /* must be first, we need OPT_INVERT = 0/1 */
 	OPTBIT_L,
+#if !ENABLE_PLATFORM_MINGW32
 	OPTBIT_A,
 	OPTBIT_F,
+#else
+#define OPTBIT_A OPTBIT_L
+#endif
 	OPTBIT_X,
+#if !ENABLE_PLATFORM_MINGW32
 	OPTBIT_O,
 	OPTBIT_N,
+#endif
+	OPTBIT_E, /* should be pkill-only, do we care? */
+#if !ENABLE_PLATFORM_MINGW32
 	OPTBIT_S,
+#endif
 	OPTBIT_P,
 };
 
 #define OPT_INVERT	(opt & (1 << OPTBIT_V))
 #define OPT_LIST	(opt & (1 << OPTBIT_L))
+#if ENABLE_PLATFORM_MINGW32
+#define OPT_LISTFULL	(0)
+#define OPT_FULL	(0)
+#else
 #define OPT_LISTFULL	(opt & (1 << OPTBIT_A))
 #define OPT_FULL	(opt & (1 << OPTBIT_F))
+#endif
 #define OPT_ANCHOR	(opt & (1 << OPTBIT_X))
+#if ENABLE_PLATFORM_MINGW32
+#define OPT_FIRST	(0)
+#define OPT_LAST	(0)
+#else
 #define OPT_FIRST	(opt & (1 << OPTBIT_O))
 #define OPT_LAST	(opt & (1 << OPTBIT_N))
+#endif
+#define OPT_ECHO	(opt & (1 << OPTBIT_E))
+#if ENABLE_PLATFORM_MINGW32
+#define OPT_SID		(0)
+#else
 #define OPT_SID		(opt & (1 << OPTBIT_S))
+#endif
 #define OPT_PPID	(opt & (1 << OPTBIT_P))
 
 static void act(unsigned pid, char *cmd, int signo)
@@ -93,8 +136,12 @@ static void act(unsigned pid, char *cmd, int signo)
 			printf("%u %s\n", pid, cmd);
 		else
 			printf("%u\n", pid);
-	} else
+	} else {
 		kill(pid, signo);
+		if (option_mask32 & (1 << OPTBIT_E)) {
+			printf("%s killed (pid %u)\n", cmd, pid);
+		}
+	}
 }
 
 int pgrep_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
@@ -105,7 +152,12 @@ int pgrep_main(int argc UNUSED_PARAM, char **argv)
 	unsigned opt;
 	int scan_mask;
 	int matched_pid;
+#if ENABLE_PLATFORM_MINGW32
+	const int sid2match = -1;
+	int ppid2match;
+#else
 	int sid2match, ppid2match;
+#endif
 	char *cmd_last;
 	procps_status_t *proc;
 	/* These are initialized to 0 */
@@ -130,8 +182,12 @@ int pgrep_main(int argc UNUSED_PARAM, char **argv)
 
 	/* Parse remaining options */
 	ppid2match = -1;
+#if !ENABLE_PLATFORM_MINGW32
 	sid2match = -1;
-	opt = getopt32(argv, "vlafxons:+P:+", &sid2match, &ppid2match);
+	opt = getopt32(argv, "vlafxones:+P:+", &sid2match, &ppid2match);
+#else
+	opt = getopt32(argv, "vlxeP:+", &ppid2match);
+#endif
 	argv += optind;
 
 	if (pkill && OPT_LIST) { /* -l: print the whole signal list */
@@ -140,8 +196,10 @@ int pgrep_main(int argc UNUSED_PARAM, char **argv)
 	}
 
 	pid = getpid();
+#if !ENABLE_PLATFORM_MINGW32
 	if (sid2match == 0)
 		sid2match = getsid(pid);
+#endif
 
 	scan_mask = PSSCAN_COMM | PSSCAN_ARGV0;
 	if (OPT_FULL)
@@ -173,6 +231,9 @@ int pgrep_main(int argc UNUSED_PARAM, char **argv)
 		}
 
 		cmdlen = -1;
+#if ENABLE_PLATFORM_MINGW32
+		cmd = proc->comm;
+#else
 		cmd = proc->argv0;
 		if (!cmd) {
 			cmd = proc->comm;
@@ -192,6 +253,7 @@ int pgrep_main(int argc UNUSED_PARAM, char **argv)
 					cmd[i] = ' ';
 			}
 		}
+#endif
 
 		if (OPT_INVERT) {
 			/* "pgrep -v -P1 firefox" means "not (ppid=1 AND name=firefox)"
@@ -208,15 +270,15 @@ int pgrep_main(int argc UNUSED_PARAM, char **argv)
 		if (!match) {
  again:
 			match = (regexec(&re_buffer, cmd, 1, re_match, 0) == 0);
+			if (match && OPT_ANCHOR) {
+				/* -x requires full string match */
+				match = (re_match[0].rm_so == 0 && cmd[re_match[0].rm_eo] == '\0');
+			}
 			if (!match && cmd != proc->comm) {
 				/* if argv[] did not match, try comm */
 				cmdlen = -1;
 				cmd = proc->comm;
 				goto again;
-			}
-			if (match && OPT_ANCHOR) {
-				/* -x requires full string match */
-				match = (re_match[0].rm_so == 0 && cmd[re_match[0].rm_eo] == '\0');
 			}
 		}
 

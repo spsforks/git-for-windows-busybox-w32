@@ -7,7 +7,7 @@
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
 //config:config LSUSB
-//config:	bool "lsusb (4.2 kb)"
+//config:	bool "lsusb (4.4 kb)"
 //config:	default y
 //config:	help
 //config:	lsusb is a utility for displaying information about USB buses in the
@@ -24,6 +24,24 @@
 
 #include "libbb.h"
 
+static char * FAST_FUNC add_sysfs_prop(const char *dir, const char *suffix,
+		char *buf, size_t size)
+{
+	char *filename;
+	ssize_t len;
+
+	filename = concat_path_file(dir, suffix);
+	len = open_read_close(filename, buf, size - 1);
+	free(filename);
+
+	if (len < 0)
+		len = 0;
+
+	buf[len] = '\0';
+
+	return trim(buf);
+}
+
 static int FAST_FUNC fileAction(struct recursive_state *state UNUSED_PARAM,
 		const char *fileName,
 		struct stat *statbuf UNUSED_PARAM)
@@ -32,7 +50,7 @@ static int FAST_FUNC fileAction(struct recursive_state *state UNUSED_PARAM,
 	char *tokens[4];
 	char *busnum = NULL, *devnum = NULL;
 	int product_vid = 0, product_did = 0;
-	char *uevent_filename = concat_path_file(fileName, "/uevent");
+	char *uevent_filename = concat_path_file(fileName, "uevent");
 
 	parser = config_open2(uevent_filename, fopen_for_read);
 	free(uevent_filename);
@@ -61,7 +79,15 @@ static int FAST_FUNC fileAction(struct recursive_state *state UNUSED_PARAM,
 	config_close(parser);
 
 	if (busnum) {
-		printf("Bus %s Device %s: ID %04x:%04x\n", busnum, devnum, product_vid, product_did);
+		char name[256], *p;
+
+		p = add_sysfs_prop(fileName, "/manufacturer", name, sizeof(name) - 1);
+		if (p != name)
+			p = stpcpy(p, " ");
+		add_sysfs_prop(fileName, "/product", p, name + sizeof(name) - p);
+
+		printf("Bus %s Device %s: ID %04x:%04x %s\n", busnum, devnum,
+		       product_vid, product_did, name);
 		free(busnum);
 		free(devnum);
 	}

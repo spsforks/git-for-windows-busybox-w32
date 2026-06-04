@@ -9,7 +9,7 @@
  * Licensed under GPLv2, see file LICENSE in this source tree.
  */
 //config:config POWERTOP
-//config:	bool "powertop (9.6 kb)"
+//config:	bool "powertop (9.9 kb)"
 //config:	default y
 //config:	help
 //config:	Analyze power consumption on Intel-based laptops
@@ -109,7 +109,7 @@ static void reset_term(void)
 static void sig_handler(int signo UNUSED_PARAM)
 {
 	reset_term();
-	_exit(EXIT_FAILURE);
+	_exit_FAILURE();
 }
 #endif
 
@@ -238,7 +238,7 @@ static void save_line(const char *string, int count)
 #if ENABLE_FEATURE_POWERTOP_PROCIRQ
 static int is_hpet_irq(const char *name)
 {
-	char *p;
+	const char *p;
 # if BLOATY_HPET_IRQ_NUM_DETECTION
 	long hpet_chan;
 
@@ -423,7 +423,8 @@ static NOINLINE int process_timer_stats(void)
 //     1,  2159 udisks-daemon    hrtimer_start_range_ns (hrtimer_wakeup)
 // 331 total events, 249.059 events/sec
 		while (fgets(buf, sizeof(buf), fp)) {
-			const char *count, *process, *func;
+			const char *process, *func;
+			char *count;
 			char *p;
 			int idx;
 			unsigned cnt;
@@ -498,24 +499,11 @@ static NOINLINE int process_timer_stats(void)
 }
 
 #ifdef __i386__
-/*
- * Get information about CPU using CPUID opcode.
- */
-static void cpuid(unsigned int *eax, unsigned int *ebx, unsigned int *ecx,
-				unsigned int *edx)
+static void cpuid_eax_ecx_edx(unsigned *eax, unsigned *ebx, unsigned *ecx, unsigned *edx)
 {
-	/* EAX value specifies what information to return */
-	asm (
-		"	cpuid\n"
-		: "=a"(*eax), /* Output */
-		  "=b"(*ebx),
-		  "=c"(*ecx),
-		  "=d"(*edx)
-		: "0"(*eax),  /* Input */
-		  "1"(*ebx),
-		  "2"(*ecx),
-		  "3"(*edx)
-		/* No clobbered registers */
+	asm ("cpuid"
+		: "=a"(*eax), "=b"(*ebx), "=c"(*ecx), "=d"(*edx)
+		: "0" (*eax),             "2" (*ecx), "3" (*edx)
 	);
 }
 #endif
@@ -592,8 +580,8 @@ static NOINLINE void print_intel_cstates(void)
 		return;
 
 	eax = 5;
-	ebx = ecx = edx = 0;
-	cpuid(&eax, &ebx, &ecx, &edx);
+	ecx = edx = 0; /* paranoia, should not be needed */
+	cpuid_eax_ecx_edx(&eax, /*unused:*/&ebx, &ecx, &edx);
 	if (!edx || !(ecx & 1))
 		return;
 

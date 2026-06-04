@@ -6,7 +6,7 @@
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
 //config:config BLKDISCARD
-//config:	bool "blkdiscard (4.3 kb)"
+//config:	bool "blkdiscard (4.6 kb)"
 //config:	default y
 //config:	help
 //config:	blkdiscard discards sectors on a given device.
@@ -70,6 +70,7 @@ int blkdiscard_main(int argc UNUSED_PARAM, char **argv)
 	if (opts & OPT_LENGTH)
 		length = xatoull_sfx(length_str, kMG_suffixes);
 	else {
+		/* BLKGETSIZE64 takes pointer to uint64_t, not ullong */
 		xioctl(fd, BLKGETSIZE64, &length);
 		length -= offset;
 	}

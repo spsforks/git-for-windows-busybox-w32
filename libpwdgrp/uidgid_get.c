@@ -32,7 +32,8 @@ int FAST_FUNC get_uidgid(struct bb_uidgid_t *u, const char *ug)
 {
 	struct passwd *pwd;
 	struct group *gr;
-	char *user, *group;
+	char *user;
+	const char *group;
 	unsigned n;
 
 	user = (char*)ug;
@@ -93,11 +94,7 @@ void FAST_FUNC parse_chown_usergroup_or_die(struct bb_uidgid_t *u, char *user_gr
 	u->uid = u->gid = (gid_t)-1L;
 
 	/* Check if there is a group name */
-	group = strchr(user_group, '.'); /* deprecated? */
-	if (!group)
-		group = strchr(user_group, ':');
-	else
-		*group = ':'; /* replace '.' with ':' */
+	group = strchr(user_group, ':');
 
 	/* Parse "user[:[group]]" */
 	if (!group) { /* "user" */

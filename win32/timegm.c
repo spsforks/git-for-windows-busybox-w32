@@ -30,7 +30,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 static long long __year_to_secs(long long year, int *is_leap)
 {
-	int cycles, centuries, leaps, rem, temp;
+	int cycles, centuries, leaps, rem;
 
 	if (year-2ULL <= 136) {
 		int y = year;
@@ -42,7 +42,6 @@ static long long __year_to_secs(long long year, int *is_leap)
 		return 31536000*(y-70) + 86400*leaps;
 	}
 
-	if (!is_leap) is_leap = &temp;
 	cycles = (year-100) / 400;
 	rem = (year-100) % 400;
 	if (rem < 0) {

@@ -7,7 +7,7 @@
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
 //config:config UNSHARE
-//config:	bool "unshare (7.2 kb)"
+//config:	bool "unshare (7.3 kb)"
 //config:	default y
 //config:	depends on !NOMMU
 //config:	select LONG_OPTS
@@ -333,7 +333,14 @@ int unshare_main(int argc UNUSED_PARAM, char **argv)
 	 * that'll become PID 1 in this new namespace.
 	 */
 	if (opts & OPT_fork) {
-		xvfork_parent_waits_and_exits();
+		pid_t pid = xvfork();
+		if (pid > 0) {
+			/* Parent */
+			int exit_status = wait_for_exitstatus(pid);
+			if (WIFSIGNALED(exit_status))
+				kill_myself_with_sig(WTERMSIG(exit_status));
+			return WEXITSTATUS(exit_status);
+		}
 		/* Child continues */
 	}
 
