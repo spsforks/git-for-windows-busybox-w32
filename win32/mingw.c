@@ -49,7 +49,9 @@ unsigned int _CRT_fmode = _O_BINARY;
 smallint bb_got_signal;
 static mode_t current_umask = DEFAULT_UMASK;
 
+#ifndef __clang__
 #pragma GCC optimize ("no-if-conversion")
+#endif
 
 static inline int wisdirsep(wchar_t w)
 {
@@ -425,7 +427,9 @@ int err_win_to_posix(void)
 	}
 	return error;
 }
+#ifndef __clang__
 #pragma GCC reset_options
+#endif
 
 #undef strerror
 char * FAST_FUNC mingw_strerror(int errnum)
