@@ -180,6 +180,7 @@ struct ASM_expects_80_shaNI { char t[1 - 2*(offsetof(sha256_ctx_t, hash) != 80)]
  * in gcc, while inline basically forces it to happen.
  */
 //#define rotl32(x,n) (((x) << (n)) | ((x) >> (32 - (n))))
+#if !ENABLE_FEATURE_USE_CNG_API
 static ALWAYS_INLINE uint32_t rotl32(uint32_t x, unsigned n)
 {
 	return (x << n) | (x >> (32 - n));
@@ -195,6 +196,7 @@ static ALWAYS_INLINE uint64_t rotr64(uint64_t x, unsigned n)
 {
 	return (x >> n) | (x << (64 - n));
 }
+#endif /* !ENABLE_FEATURE_USE_CNG_API */
 
 /* rotl64 only used for sha3 currently */
 static ALWAYS_INLINE uint64_t rotl64(uint64_t x, unsigned n)
