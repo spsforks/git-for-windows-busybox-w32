@@ -80,7 +80,7 @@ int mkdir_main(int argc UNUSED_PARAM, char **argv)
 	}
 	if (opt & 2)
 		flags |= FILEUTILS_RECUR;
-	if ((opt & 4) && FILEUTILS_VERBOSE)
+	if ((opt & 4) && (FILEUTILS_VERBOSE != 0))
 		flags |= FILEUTILS_VERBOSE;
 #if ENABLE_SELINUX
 	if (opt & 8) {

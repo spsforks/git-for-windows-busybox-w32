@@ -168,7 +168,7 @@ int install_main(int argc, char **argv)
 	}
 #endif
 
-	if ((opts & OPT_v) && FILEUTILS_VERBOSE) {
+	if ((opts & OPT_v) && (FILEUTILS_VERBOSE != 0)) {
 		mkdir_flags |= FILEUTILS_VERBOSE;
 		copy_flags |= FILEUTILS_VERBOSE;
 	}
