@@ -135,7 +135,7 @@ static wchar_t *pathconv_rest(wchar_t *result, int offset, const char *path)
 }
 
 /* This function is not thread safe. Does it need to be? */
-wchar_t *mingw_pathconv(const char *path)
+wchar_t * FAST_FUNC mingw_pathconv(const char *path)
 {
 	static wchar_t pseudo_root[PATH_MAX];
 #define MAX_CONCURRENT_PATHCONV 64
@@ -2180,7 +2180,7 @@ static inline int wcstoutf(wchar_t *in, char *out, size_t size)
 	return 0;
 }
 
-char *realpath(const char *path, char *resolved_path)
+char * FAST_FUNC realpath(const char *path, char *resolved_path)
 {
 	wchar_t *wpath = mingw_pathconv(path);
 	wchar_t buffer[PATH_MAX_LONG];
