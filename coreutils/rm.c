@@ -54,7 +54,7 @@ int rm_main(int argc UNUSED_PARAM, char **argv)
 		flags |= FILEUTILS_INTERACTIVE;
 	if (opt & (8|4))
 		flags |= FILEUTILS_RECUR;
-	if ((opt & 16) && FILEUTILS_VERBOSE)
+	if ((opt & 16) && (FILEUTILS_VERBOSE != 0))
 		flags |= FILEUTILS_VERBOSE;
 
 	if (*argv != NULL) {

@@ -4242,7 +4242,7 @@ static BC_STATUS zbc_parse_if(void)
 {
 	BcParse *p = &G.prs;
 	BcStatus s;
-	size_t ip_idx;
+	size_t ip_idx = 0;
 
 	dbg_lex_enter("%s:%d entered", __func__, __LINE__);
 	s = zxc_lex_next();
@@ -4266,7 +4266,7 @@ static BC_STATUS zbc_parse_if(void)
 
 	dbg_lex("%s:%d in if after stmt: p->lex:%d", __func__, __LINE__, p->lex);
 	if (p->lex == BC_LEX_KEY_ELSE) {
-		size_t ip2_idx;
+		size_t ip2_idx = 0;
 
 		// Encode "after then_stmt, jump to end of if()"
 		ip2_idx = bc_vec_push(&p->func->labels, &ip2_idx);

@@ -49,7 +49,9 @@ unsigned int _CRT_fmode = _O_BINARY;
 smallint bb_got_signal;
 static mode_t current_umask = DEFAULT_UMASK;
 
+#ifndef __clang__
 #pragma GCC optimize ("no-if-conversion")
+#endif
 
 static inline int wisdirsep(wchar_t w)
 {
@@ -135,7 +137,7 @@ static wchar_t *pathconv_rest(wchar_t *result, int offset, const char *path)
 }
 
 /* This function is not thread safe. Does it need to be? */
-wchar_t *mingw_pathconv(const char *path)
+wchar_t * FAST_FUNC mingw_pathconv(const char *path)
 {
 	static wchar_t pseudo_root[PATH_MAX];
 #define MAX_CONCURRENT_PATHCONV 64
@@ -425,7 +427,9 @@ int err_win_to_posix(void)
 	}
 	return error;
 }
+#ifndef __clang__
 #pragma GCC reset_options
+#endif
 
 #undef strerror
 char * FAST_FUNC mingw_strerror(int errnum)
@@ -2142,8 +2146,6 @@ static wchar_t *resolve_symlinks(wchar_t *wpath)
  */
 static wchar_t * FAST_FUNC wrealpath(wchar_t *wpath, wchar_t *resolved_path)
 {
-	wchar_t *real_path;
-
 	/* enforce glibc pre-2.3 behaviour */
 	if (wpath == NULL || resolved_path == NULL) {
 		errno = EINVAL;
@@ -2154,9 +2156,9 @@ static wchar_t * FAST_FUNC wrealpath(wchar_t *wpath, wchar_t *resolved_path)
 	    (resolved_path = resolve_symlinks(resolved_path))) {
 		size_t len = wcslen(resolved_path);
 
-		if (len > 0 && real_path[len - 1] == L'\\' &&
-		    (len < 2 || real_path[len - 2] != L':'))
-			real_path[len - 1] = L'\0';
+		if (len > 0 && resolved_path[len - 1] == L'\\' &&
+		    (len < 2 || resolved_path[len - 2] != L':'))
+			resolved_path[len - 1] = L'\0';
 
 		return resolved_path;
 	}
@@ -2182,7 +2184,7 @@ static inline int wcstoutf(wchar_t *in, char *out, size_t size)
 	return 0;
 }
 
-char *realpath(const char *path, char *resolved_path)
+char * FAST_FUNC realpath(const char *path, char *resolved_path)
 {
 	wchar_t *wpath = mingw_pathconv(path);
 	wchar_t buffer[PATH_MAX_LONG];

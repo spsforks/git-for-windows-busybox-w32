@@ -265,12 +265,19 @@ static const unsigned char integral_type_size[MAX_INTEGRAL_TYPE_SIZE + 1] ALIGN1
 };
 
 #define MAX_FP_TYPE_SIZE sizeof(longdouble_t)
+#ifdef __clang__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winitializer-overrides"
+#endif
 static const unsigned char fp_type_size[MAX_FP_TYPE_SIZE + 1] ALIGN1 = {
 	/* gcc seems to allow repeated indexes. Last one wins */
 	[sizeof(longdouble_t)] = FLOAT_LONG_DOUBLE,
 	[sizeof(double)] = FLOAT_DOUBLE,
 	[sizeof(float)] = FLOAT_SINGLE
 };
+#ifdef __clang__
+#pragma GCC diagnostic pop
+#endif
 
 
 static unsigned

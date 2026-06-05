@@ -122,7 +122,7 @@ static void exit_process_on_signal(HANDLE process)
 	LeaveCriticalSection(&spawned_processes.mutex);
 }
 
-void initialize_critical_sections(void)
+void FAST_FUNC initialize_critical_sections(void)
 {
 	InitializeCriticalSection(&spawned_processes.mutex);
 	atexit(kill_spawned_processes_on_signal);

@@ -252,8 +252,9 @@ int id_main(int argc UNUSED_PARAM, char **argv)
 				bb_simple_error_msg_and_die("can't get groups");
 			return EXIT_FAILURE;
 		}
-		if (ENABLE_FEATURE_CLEAN_UP && !ENABLE_PLATFORM_MINGW32)
-			free(groups);
+#if ENABLE_FEATURE_CLEAN_UP && !ENABLE_PLATFORM_MINGW32
+		free(groups);
+#endif
 #if ENABLE_SELINUX
 		if (is_selinux_enabled()) {
 			if (getcon(&scontext) == 0)
