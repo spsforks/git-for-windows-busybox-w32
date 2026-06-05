@@ -2142,8 +2142,6 @@ static wchar_t *resolve_symlinks(wchar_t *wpath)
  */
 static wchar_t * FAST_FUNC wrealpath(wchar_t *wpath, wchar_t *resolved_path)
 {
-	wchar_t *real_path;
-
 	/* enforce glibc pre-2.3 behaviour */
 	if (wpath == NULL || resolved_path == NULL) {
 		errno = EINVAL;
@@ -2154,9 +2152,9 @@ static wchar_t * FAST_FUNC wrealpath(wchar_t *wpath, wchar_t *resolved_path)
 	    (resolved_path = resolve_symlinks(resolved_path))) {
 		size_t len = wcslen(resolved_path);
 
-		if (len > 0 && real_path[len - 1] == L'\\' &&
-		    (len < 2 || real_path[len - 2] != L':'))
-			real_path[len - 1] = L'\0';
+		if (len > 0 && resolved_path[len - 1] == L'\\' &&
+		    (len < 2 || resolved_path[len - 2] != L':'))
+			resolved_path[len - 1] = L'\0';
 
 		return resolved_path;
 	}
