@@ -345,6 +345,9 @@ ifeq ($(shell _= command -v $(AR)),)
 AR := $(CROSS_COMPILE)gcc-ar
 STRIP := strip
 WINDRES := windres
+ifeq ($(shell _= command -v $(AR)),)
+AR := llvm-ar
+endif
 endif
 endif
 
