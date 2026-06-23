@@ -312,11 +312,9 @@ quote_arg_msys2(const char *arg)
 			escapes++;
 
 	if (!escapes && !has_white_space && p != arg)
-		return (char *)arg;
+		return xstrdup(arg);
 
-	q = result = malloc(p - arg + escapes + 3);
-	if (!q)
-		return (char *)arg; /* out of memory: punt */
+	q = result = xmalloc(p - arg + escapes + 3);
 	*(q++) = '"';
 	for (p = arg; *p; p++) {
 		if (*p == '"' || *p == '\\')
