@@ -4916,7 +4916,7 @@ waitpid_child(int *status, DWORD blocking)
 	static int pid_max = 0;
 	pid_t pid = -1;
 	DWORD win_status, idx;
-	int i;
+	int i, base;
 
 	for (jb = curjob; jb; jb = jb->prev_job) {
 		if (jb->state != JOBDONE) {
@@ -4935,14 +4935,29 @@ waitpid_child(int *status, DWORD blocking)
 
 	if (pid_nr) {
 		do {
-			idx = WaitForMultipleObjects(pid_nr, proclist, FALSE, blocking);
-			if (idx < pid_nr) {
-				GetExitCodeProcess(proclist[idx], &win_status);
-				*status = exit_code_to_wait_status(win_status);
-				pid = GetProcessId(proclist[idx]);
-				CloseHandle(proclist[idx]);
-				break;
+			/*
+			 * WaitForMultipleObjects() can watch at most
+			 * MAXIMUM_WAIT_OBJECTS (64) handles at a time, but a
+			 * shell can easily have more background jobs than that,
+			 * so scan the handles in batches.
+			 */
+			for (base = 0; base < pid_nr; base += MAXIMUM_WAIT_OBJECTS) {
+				DWORD count = pid_nr - base;
+				if (count > MAXIMUM_WAIT_OBJECTS)
+					count = MAXIMUM_WAIT_OBJECTS;
+				idx = WaitForMultipleObjects(count, proclist + base,
+								FALSE, blocking);
+				if (idx < count) {
+					idx += base;
+					GetExitCodeProcess(proclist[idx], &win_status);
+					*status = exit_code_to_wait_status(win_status);
+					pid = GetProcessId(proclist[idx]);
+					CloseHandle(proclist[idx]);
+					break;
+				}
 			}
+			if (pid != -1)
+				break;
 		} while (blocking && !pending_int && waitcmd_int != 1);
 	}
 	return pid;
