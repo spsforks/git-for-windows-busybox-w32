@@ -5627,7 +5627,20 @@ growjobtab(void)
 
 	len = njobs * sizeof(*jp);
 	jq = jobtab;
-	jp = ckrealloc(jq, len + 4 * sizeof(*jp));
+#if ENABLE_PLATFORM_MINGW32
+	if (jq && (void *)jq >= sticky_mem_start && (void *)jq < sticky_mem_end) {
+		/*
+		 * A forkshell child inherits its jobtab from the read/write
+		 * shared-memory block, which was never returned by malloc() and
+		 * so must not be handed to realloc().  Copy it into the heap (the
+		 * pointer fixups below then relocate ps0/prev_job/curjob), just
+		 * as sticky_free() avoids free()ing the same memory.
+		 */
+		jp = ckmalloc(len + 4 * sizeof(*jp));
+		memcpy(jp, jq, len);
+	} else
+#endif
+		jp = ckrealloc(jq, len + 4 * sizeof(*jp));
 
 	offset = (char *)jp - (char *)jq;
 	if (offset) {
