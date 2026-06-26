@@ -17841,6 +17841,72 @@ forkshell_prepare(struct forkshell *fs)
 }
 
 #undef trap_ptr
+/*
+ * Forkshell children are re-executed busybox processes, which makes attaching
+ * a debugger to them awkward.  When the environment variable BB_CRASH_LOG names
+ * a directory, install a vectored exception handler that, on a fatal exception,
+ * writes the faulting module's base address followed by a raw return-address
+ * backtrace to "<dir>/bb_crash_<pid>.txt".  The addresses can be symbolised
+ * offline with addr2line against the unstripped binary.  The handler runs after
+ * the heap may already be corrupt, so it touches neither the heap nor any
+ * library beyond kernel32/ntdll.
+ */
+static char bb_crash_dir[MAX_PATH];
+
+static int bb_fmt_hex(char *out, uintptr_t v)
+{
+	static const char digits[] = "0123456789abcdef";
+	int i, n = sizeof(uintptr_t) * 2;
+	for (i = 0; i < n; i++)
+		out[i] = digits[(v >> ((n - 1 - i) * 4)) & 0xf];
+	out[n] = '\n';
+	return n + 1;
+}
+
+static LONG CALLBACK bb_crash_filter(EXCEPTION_POINTERS *ep)
+{
+	DWORD code = ep->ExceptionRecord->ExceptionCode;
+
+	/* heap corruption, access violation, stack buffer overrun */
+	if (code == 0xC0000374 || code == 0xC0000005 || code == 0xC0000409) {
+		void *frames[62];
+		USHORT k, n = RtlCaptureStackBackTrace(0, 62, frames, NULL);
+		char path[MAX_PATH], buf[2 * sizeof(uintptr_t) + 1];
+		const char *p = bb_crash_dir;
+		char *q = path;
+		HANDLE f;
+		DWORD wr;
+
+		while (*p)
+			*q++ = *p++;
+		for (p = "/bb_crash_"; *p; )
+			*q++ = *p++;
+		q += bb_fmt_hex(q, GetCurrentProcessId()) - 1; /* drop the '\n' */
+		memcpy(q, ".txt", 5);
+
+		f = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+		if (f != INVALID_HANDLE_VALUE) {
+			WriteFile(f, buf, bb_fmt_hex(buf, code), &wr, NULL);
+			WriteFile(f, buf, bb_fmt_hex(buf,
+				(uintptr_t)GetModuleHandleA(NULL)), &wr, NULL);
+			for (k = 0; k < n; k++)
+				WriteFile(f, buf, bb_fmt_hex(buf,
+					(uintptr_t)frames[k]), &wr, NULL);
+			CloseHandle(f);
+		}
+	}
+	return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static void install_crash_handler(void)
+{
+	const char *dir = getenv("BB_CRASH_LOG");
+	if (dir && *dir && strlen(dir) < sizeof(bb_crash_dir) - 32) {
+		strcpy(bb_crash_dir, dir);
+		AddVectoredExceptionHandler(1, bb_crash_filter);
+	}
+}
+
 static void
 forkshell_init(const char *idstr)
 {
@@ -17850,6 +17916,8 @@ forkshell_init(const char *idstr)
 	int i;
 	char **ptr;
 	char *lrelocate;
+
+	install_crash_handler();
 
 	if (sscanf(idstr, "%p", &map_handle) != 1)
 		return;
